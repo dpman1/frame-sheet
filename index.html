@@ -3419,7 +3419,7 @@ body.dpc-tools-open .dpc-tools-panel{display:block}
     <button id="pick">파일 선택</button>
     <button id="addBlank">프레임</button><span id="lastFrameRatioBadge" class="last-frame-ratio-badge">16:9</span>
   </div>
-  <button id="make" class="sheetBtn">SHEET</button>
+  <button id="make" class="sheetBtn" disabled aria-busy="true">SHEET</button>
 </div>
 
 <div class="savebar">
@@ -3579,13 +3579,18 @@ function applyFrameSheetInitialState(){
   setFrameSheetValue('margin','50');
   setFrameSheetValue('bgColor','#ffffff');
   setFrameSheetValue('cutSizeMode','auto');
+  setFrameSheetChecked('textMarginOn',false);
   if(typeof window.dpcSyncCutSizePicker==='function') window.dpcSyncCutSizePicker();
   setFrameSheetValue('prefix','');
   const fs=document.getElementById('frameSize');
   if(fs) fs.disabled=false;
   window.__sheetUserEditedFlow=false;
+  window.__sheetUserEditedRatio=false;
+  window.__sheetUserEditedLayout=false;
   window.__sheetUserEditedMargin=false;
   window.__sheetUserEditedGap=false;
+  window.__fsCurrentUiDirty=false;
+  window.__dpcTextMarginBaseLayout=null;
   syncFrameSheetOptionLabels();
 }
 function resetFrameSheetRuntimeToInitial(){
@@ -4219,93 +4224,96 @@ if(bgColor.value!=="transparent"){
 };
 </script>
 
-<script>
-document.getElementById('saveAll').onclick=()=>{
- const prefix=(document.getElementById('prefix')?.value||'sheet').trim()||'sheet';
- const canvases=[...document.querySelectorAll('#pages canvas')];
- if(!canvases.length){ alert('먼저 시트를 생성하세요'); return; }
- canvases.forEach((cv,i)=>{
-   const a=document.createElement('a');
-   a.download=`${prefix}-${String(i+1).padStart(3,'0')}.png`;
-   a.href=cv.toDataURL('image/png');
-   a.click();
- });
-};
+<script id="dpc-sheet-png-output-authority">
+(function(){
+  'use strict';
+  var pngCache=new WeakMap();
 
-document.getElementById('saveZip').onclick=async()=>{
- const prefix=(document.getElementById('prefix')?.value||'sheet').trim()||'sheet';
- const canvases=[...document.querySelectorAll('#pages canvas')];
- if(!canvases.length){ alert('먼저 시트를 생성하세요'); return; }
- const zip=new JSZip();
- canvases.forEach((cv,i)=>{
-   zip.file(`${prefix}-${String(i+1).padStart(3,'0')}.png`,
-     cv.toDataURL('image/png').split(',')[1],{base64:true});
- });
- const blob=await zip.generateAsync({type:'blob'});
- const a=document.createElement('a');
- a.href=URL.createObjectURL(blob);
- a.download=`${prefix}.zip`;
- a.click();
-};
+  function dataUrlBlob(dataUrl){
+    var parts=String(dataUrl||'').split(',');
+    var type=((parts[0]||'').match(/data:([^;]+)/)||[])[1]||'image/png';
+    var raw=atob(parts[1]||'');
+    var bytes=new Uint8Array(raw.length);
+    for(var i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);
+    return new Blob([bytes],{type:type});
+  }
+  function pngRecord(canvas){
+    var record=pngCache.get(canvas);
+    if(record) return record;
+    record={blob:null,promise:null};
+    record.promise=new Promise(function(resolve,reject){
+      function complete(blob){
+        if(!blob){ reject(new Error('PNG 인코딩에 실패했습니다.')); return; }
+        record.blob=blob;
+        resolve(blob);
+      }
+      try{
+        if(canvas.toBlob) canvas.toBlob(complete,'image/png');
+        else complete(dataUrlBlob(canvas.toDataURL('image/png')));
+      }catch(error){ reject(error); }
+    }).catch(function(error){
+      pngCache.delete(canvas);
+      throw error;
+    });
+    pngCache.set(canvas,record);
+    return record;
+  }
+  window.getDpcSheetPngBlob=function(canvas){ return pngRecord(canvas).promise; };
+  window.peekDpcSheetPngBlob=function(canvas){ var record=pngCache.get(canvas); return record&&record.blob||null; };
 
-document.addEventListener('click',e=>{
- if(e.target && e.target.id==='saveCurrent'){
-   const cv=document.querySelector('#pages canvas');
-   if(!cv){ alert('먼저 시트를 생성하세요'); return; }
-   const prefix=document.getElementById('prefix').value.trim() || 'sheet';
-   const a=document.createElement('a');
-   a.download=prefix+'-001.png';
-   a.href=cv.toDataURL('image/png');
-   a.click();
- }
- if(e.target && e.target.id==='saveAll'){
-   
- }
- if(e.target && e.target.id==='saveZip'){
-   
- }
-});
-</script>
+  function prefix(){
+    var input=document.getElementById('prefix');
+    return ((input&&input.value)||'sheet').trim()||'sheet';
+  }
+  function canvases(){ return Array.prototype.slice.call(document.querySelectorAll('#pages canvas')); }
+  function download(blob,name){
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url;
+    a.download=name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); },30000);
+  }
+  async function withBusy(button,job){
+    if(button.__dpcSaving) return;
+    button.__dpcSaving=true;
+    button.setAttribute('aria-busy','true');
+    try{ await job(); }
+    catch(error){ console.error(error); alert('파일 저장 중 오류가 발생했습니다.'); }
+    finally{ button.__dpcSaving=false; button.removeAttribute('aria-busy'); }
+  }
+  function saveAll(event){
+    event.preventDefault();
+    var button=event.currentTarget;
+    var list=canvases();
+    if(!list.length){ alert('먼저 시트를 생성하세요'); return; }
+    withBusy(button,async function(){
+      var blobs=await Promise.all(list.map(window.getDpcSheetPngBlob));
+      var base=prefix();
+      blobs.forEach(function(blob,index){ download(blob,base+'-'+String(index+1).padStart(3,'0')+'.png'); });
+    });
+  }
+  function saveZip(event){
+    event.preventDefault();
+    var button=event.currentTarget;
+    var list=canvases();
+    if(!list.length){ alert('먼저 시트를 생성하세요'); return; }
+    withBusy(button,async function(){
+      var blobs=await Promise.all(list.map(window.getDpcSheetPngBlob));
+      var base=prefix();
+      var zip=new JSZip();
+      blobs.forEach(function(blob,index){ zip.file(base+'-'+String(index+1).padStart(3,'0')+'.png',blob); });
+      download(await zip.generateAsync({type:'blob'}),base+'.zip');
+    });
+  }
 
-
-<script>
-document.addEventListener('click', async (e)=>{
- const prefix=(document.getElementById('prefix')?.value||'sheet').trim() || 'sheet';
-
- if(e.target && e.target.id==='saveAll'){
-   const canvases=[...document.querySelectorAll('#pages canvas')];
-   if(!canvases.length){ alert('먼저 시트를 생성하세요'); return; }
-
-   canvases.forEach((cv,i)=>{
-      const a=document.createElement('a');
-      a.download=`${prefix}-${String(i+1).padStart(3,'0')}.png`;
-      a.href=cv.toDataURL('image/png');
-      a.click();
-   });
- }
-
- if(e.target && e.target.id==='saveZip'){
-   const canvases=[...document.querySelectorAll('#pages canvas')];
-   if(!canvases.length){ alert('먼저 시트를 생성하세요'); return; }
-
-   const zip=new JSZip();
-
-   canvases.forEach((cv,i)=>{
-      const data=cv.toDataURL('image/png').split(',')[1];
-      zip.file(
-        `${prefix}-${String(i+1).padStart(3,'0')}.png`,
-        data,
-        {base64:true}
-      );
-   });
-
-   const blob=await zip.generateAsync({type:'blob'});
-   const a=document.createElement('a');
-   a.href=URL.createObjectURL(blob);
-   a.download=`${prefix}.zip`;
-   a.click();
- });
-});
+  var saveAllButton=document.getElementById('saveAll');
+  var saveZipButton=document.getElementById('saveZip');
+  if(saveAllButton) saveAllButton.addEventListener('click',saveAll);
+  if(saveZipButton) saveZipButton.addEventListener('click',saveZip);
+})();
 </script>
 
 
@@ -5185,30 +5193,30 @@ document.addEventListener('DOMContentLoaded',()=>{
     function applyUserFlow(value){
       if(!flow) return;
       const previous=flow.value==='horizontal'?'horizontal':'vertical';
-      if(previous!==value){
-        /* 방향 변경은 이미 확정된 추천/수동 상태의 좌표 전환이다.
-           전체 recommend()를 다시 실행하면 텍스트 여백 원본 수용량이
-           현재 시트 비율과 표시 규격을 덮어쓰므로 여기서는 호출하지 않는다. */
-        const ci=document.getElementById('colsInput');
-        const ri=document.getElementById('rowsInput');
-        const base=window.__dpcTextMarginBaseLayout;
-        const layoutLocked=!!document.getElementById('lockLayout')?.checked;
-        if(!layoutLocked&&ci&&ri){
-          const c=Math.max(1,parseInt(ci.value,10)||1);
-          const r=Math.max(1,parseInt(ri.value,10)||1);
-          ci.value=String(r);
-          ri.value=String(c);
-          /* 텍스트 여백 OFF 복원 기준도 동일한 방향으로 전환한다. */
-          if(base){
-            const baseC=Math.max(1,parseInt(base.c,10)||1);
-            const baseR=Math.max(1,parseInt(base.r,10)||1);
-            base.c=baseR;
-            base.r=baseC;
-          }
-        }
-      }
       flow.value=value;
       window.__sheetUserEditedFlow=true;
+      if(previous!==value && typeof recommend==='function'){
+        const base=window.__dpcTextMarginBaseLayout;
+        const textOn=!!document.getElementById('textMarginOn')?.checked;
+        const layoutLocked=!!document.getElementById('lockLayout')?.checked;
+        if(textOn&&base&&!layoutLocked&&typeof orientSheetRecommendation==='function'){
+          const orientedBase=orientSheetRecommendation(base.c,base.r,1,1,previous,value);
+          base.c=orientedBase.c;
+          base.r=orientedBase.r;
+          base.flow=value;
+        }
+        const fallbackCount=(()=>{
+          if(textOn&&base) return Math.max(1,(parseInt(base.c,10)||1)*(parseInt(base.r,10)||1));
+          if(typeof items!=='undefined'&&Array.isArray(items)&&items.length) return items.length;
+          const c=parseInt(document.getElementById('colsInput')?.value,10)||1;
+          const r=parseInt(document.getElementById('rowsInput')?.value,10)||1;
+          return Math.max(1,c*r);
+        })();
+        const count=typeof window.currentSheetRecommendationCount==='function'
+          ? window.currentSheetRecommendationCount()
+          : fallbackCount;
+        recommend({__sheetLinkedRecommendation:true,countOverride:Math.max(1,count||fallbackCount)});
+      }
       if(typeof syncFrameSheetOptionLabels==='function') syncFrameSheetOptionLabels();
     }
     if(v) v.addEventListener('change',()=>{ if(v.checked) applyUserFlow('vertical'); });
@@ -5554,16 +5562,6 @@ document.addEventListener('DOMContentLoaded',()=>{
        시트 확인 후 스크롤이 남아 있어도 초기화 썸네일 높이가 과대 계산되지 않는다. */
     var cardDocumentTop=rect.top+(window.pageYOffset || document.documentElement.scrollTop || 0);
     var style=getComputedStyle(card);
-    var padY=(parseFloat(style.paddingTop)||0)+(parseFloat(style.paddingBottom)||0);
-    var borderY=(parseFloat(style.borderTopWidth)||0)+(parseFloat(style.borderBottomWidth)||0);
-    var innerWidth=Math.max(0,card.clientWidth-(parseFloat(style.paddingLeft)||0)-(parseFloat(style.paddingRight)||0));
-    var ratio=(img.naturalWidth>0 && img.naturalHeight>0)?(img.naturalWidth/img.naturalHeight):1;
-
-    /* 최소 표시 높이는 데스크톱 가로폭 전체로 역산하지 않는다.
-       기존 안정 표시 상한(370px)을 기준으로 제한해 초기화 시 과대 확대를 막는다. */
-    var widthBasedNatural=Math.ceil((innerWidth/ratio)+padY+borderY);
-    var widthBasedMin=Math.min(widthBasedNatural,370);
-
     var credit=document.querySelector('.credit-footer');
     var creditOuter=0;
     if(credit){
@@ -5577,7 +5575,9 @@ document.addEventListener('DOMContentLoaded',()=>{
        정수 위상인 SHEET에 그대로 쓰면 하단 전체가 0.5px 내려간다.
        footer를 따로 이동하지 않고, viewport를 소유한 카드 높이에서 위상을 맞춘다. */
     var available=Math.floor(readIntroViewportHeight()-cardDocumentTop-cardMarginBottom-creditOuter-bodyPaddingBottom-2)-0.5;
-    var target=Math.max(available,widthBasedMin);
+    /* 뷰포트 안에서 카드와 크레딧이 함께 보여야 한다는 제약이 최종 권한이다.
+       이미지의 자연 높이는 object-fit:contain으로 축소되며 카드 높이의 하한이 될 수 없다. */
+    var target=Math.max(1,available);
     if(target>0){
       card.style.height=target+'px';
       card.classList.add('is-layout-ready');
@@ -9111,6 +9111,30 @@ function isSheetLayoutLocked(){
  return !!(el&&el.checked);
 }
 
+/* 방향 변경은 기존 추천 세트의 셀 비례를 보존한 채 격자와 시트를 함께 재구성한다.
+ * 특정 컷수/규격 예외 없이 모든 추천값에 동일한 식을 적용한다. */
+function orientSheetRecommendation(c,r,rw,rh,fromFlow,toFlow){
+ const to=toFlow==='horizontal'?'horizontal':'vertical';
+ const cols=Math.max(1,Number(c)||1), rows=Math.max(1,Number(r)||1);
+ const needsRotation=to==='horizontal' ? cols<rows : rows<cols;
+ if(!needsRotation) return {c:c,r:r,rw:rw,rh:rh};
+
+ const oldGrid=cols/rows;
+ const nextC=r, nextR=c;
+ const newGrid=Math.max(1,nextC)/Math.max(1,nextR);
+ const targetRatio=(Math.max(Number(rw)||1,0.0001)/Math.max(Number(rh)||1,0.0001))*(newGrid/oldGrid);
+ const presets=[
+   [9,20],[9,16],[7,10],[4,5],[1,1],[4,3],[10,7],[3,2],[16,9],
+   [1.85,1],[1.90,1],[2,1],[2.20,1],[21,9],[2.35,1],[2.39,1],[32,9],[4,1]
+ ];
+ let best=presets[0], bestError=Infinity;
+ for(const pair of presets){
+   const error=Math.abs(Math.log((pair[0]/pair[1])/targetRatio));
+   if(error<bestError){ best=pair; bestError=error; }
+ }
+ return {c:nextC,r:nextR,rw:best[0],rh:best[1]};
+}
+
 function recommend(request){
  if(!autoMode) return;
  const linked=!!(request&&request.__sheetLinkedRecommendation===true);
@@ -9310,12 +9334,10 @@ function recommend(request){
    }catch(e){}
  }
 
- /* 사용자가 방향을 선택하면 규격 방향만 함께 전환한다.
-    시트 비율은 배치 순서와 별개의 사용자 선택값이며 방향 변경만으로 뒤집지 않는다.
-    텍스트 여백 ON은 아래 공통 추천 함수가 방향에 맞는 규격을 직접 계산한다. */
+ /* 컷수별 기본 추천 세트에 사용자가 선택한 방향을 공통식으로 적용한다. */
  if(userFlowOverride){
-   const textOnNow=!!document.getElementById('textMarginOn')?.checked;
-   if(!textOnNow && nextFlow!==userFlowOverride){ const tc=c; c=r; r=tc; }
+   const oriented=orientSheetRecommendation(c,r,rw,rh,nextFlow,userFlowOverride);
+   c=oriented.c; r=oriented.r; rw=oriented.rw; rh=oriented.rh;
    nextFlow=userFlowOverride;
  }
 
@@ -10454,19 +10476,39 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
   function markLayoutManual(){ window.__sheetUserEditedLayout=true; window.__fsCurrentUiDirty=true; }
   var linkedRatioTimer=0, linkedLayoutTimer=0;
   function positiveValue(id){ var x=E(id), v=parseFloat(x&&x.value); return Number.isFinite(v)&&v>0?v:0; }
+  /* 텍스트 여백 ON에서 화면에 보이는 규격은 이미 여백 칸을 합친 최종 규격이다.
+     수동 입력도 자동 변환과 같은 상태가 되도록, OFF 복원용 일반 규격만 역산한다.
+     세로 배치는 오른쪽 여백이므로 열을, 가로 배치는 아래 여백이므로 행을 두 배로 채운다. */
+  function syncTextMarginBaseFromVisible(c,r){
+    var textOn=!!(E('textMarginOn')&&E('textMarginOn').checked);
+    if(!textOn) return Math.max(1,Math.round(c*r));
+    var horizontal=!!(E('flow')&&E('flow').value==='horizontal');
+    var baseC=horizontal?c:c*2;
+    var baseR=horizontal?r*2:r;
+    window.__dpcTextMarginBaseLayout={
+      c:Math.max(1,Math.round(baseC)),
+      r:Math.max(1,Math.round(baseR)),
+      flow:horizontal?'horizontal':'vertical',
+      manual:true,
+      dirty:true
+    };
+    return window.__dpcTextMarginBaseLayout.c*window.__dpcTextMarginBaseLayout.r;
+  }
   function currentRecommendationCount(){
-    var list=(typeof items!=='undefined'&&Array.isArray(items))?items:[];
-    if(list.length) return list.length;
-    /* 텍스트 여백 규격은 페이지당 배치 수일 뿐 원본 추천 컷수가 아니다.
-       실제 항목이 없는 초기 화면에서는 ON 직전 일반 규격의 수용량을 기준으로 쓴다. */
+    /* ON 상태에서는 실제 컷수가 아니라 자동/수동 모두가 공유하는
+       OFF 복원 규격이 추천 기준이다. 실제 컷수는 페이지 분할에만 쓰인다. */
+    var textOn=!!(E('textMarginOn')&&E('textMarginOn').checked);
     var textBase=window.__dpcTextMarginBaseLayout;
-    if(textBase){
+    if(textOn&&textBase){
       var baseC=parseInt(textBase.c,10), baseR=parseInt(textBase.r,10);
       if(baseC>0&&baseR>0) return Math.max(1,baseC*baseR);
     }
+    var list=(typeof items!=='undefined'&&Array.isArray(items))?items:[];
+    if(list.length) return list.length;
     var c=positiveValue('colsInput'), r=positiveValue('rowsInput');
     return c&&r?Math.max(1,Math.round(c*r)):0;
   }
+  window.currentSheetRecommendationCount=currentRecommendationCount;
   function syncRecommendationFromRatio(ev){
     clearTimeout(linkedRatioTimer);
     markRatioManual();
@@ -10484,16 +10526,20 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
     clearTimeout(linkedLayoutTimer);
     markLayoutManual();
     var c=positiveValue('colsInput'), r=positiveValue('rowsInput');
-    if(isSheetRatioLocked() || !c || !r) return;
+    if(!c || !r) return;
+    /* 비율이 고정돼도 OFF 복원 기준은 즉시 갱신한다. */
+    syncTextMarginBaseFromVisible(c,r);
+    if(isSheetRatioLocked()) return;
     var delay=ev&&ev.type==='input'?140:0;
     linkedLayoutTimer=setTimeout(function(){
-      /* 이 경로는 사용자가 규격 입력창/선택기를 직접 바꾼 경우에만 실행된다.
-         따라서 새 추천의 컷수 권한은 기존 items.length가 아니라 현재 c×r이다.
-         텍스트 여백의 프로그램 전환은 input/change를 발생시키지 않아 이 경로와 섞이지 않는다. */
+      /* 지연 중 두 입력값이 바뀔 수 있으므로 실행 시점의 완성된 값을 다시 읽는다. */
+      var currentC=positiveValue('colsInput'), currentR=positiveValue('rowsInput');
+      if(!currentC||!currentR) return;
+      var recommendationCount=syncTextMarginBaseFromVisible(currentC,currentR);
       if(typeof recommend==='function') recommend({
         __sheetLinkedRecommendation:true,
         preserveLayout:true,
-        countOverride:Math.max(1,Math.round(c*r))
+        countOverride:recommendationCount
       });
     },delay);
   }
@@ -10508,7 +10554,7 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
       recommend({
         __sheetLinkedRecommendation:true,
         preserveLayout:true,
-        countOverride:Math.max(1,Math.round(c*r))
+        countOverride:syncTextMarginBaseFromVisible(c,r)
       });
       return;
     }
@@ -11503,6 +11549,7 @@ body.__sheet_processing #make.sheetBtn:focus{
           var baseR=Math.max(1,parseInt(E('rowsInput')&&E('rowsInput').value,10)||1);
           window.__dpcTextMarginBaseLayout={
             c:baseC,r:baseR,
+            flow:(E('flow')&&E('flow').value)||'vertical',
             manual:!!window.__sheetUserEditedLayout,
             dirty:!!window.__fsCurrentUiDirty
           };
@@ -11521,9 +11568,8 @@ body.__sheet_processing #make.sheetBtn:focus{
       }
       if(typeof syncFrameSheetOptionLabels==='function') syncFrameSheetOptionLabels();
     };
-    /* 방향 변경은 applyUserFlow가 현재 표시 규격과 복원 기준을 전환한다.
-       여기서 추천식을 다시 실행하면 실제 items.length가 현재 수동 상태를 덮어쓰므로,
-       시트 비율 변경만 텍스트 여백 배치를 재계산한다. */
+    /* 방향 변경은 applyUserFlow가 동일한 컷수의 방향별 추천 세트를 다시 계산한다.
+       시트 비율을 직접 바꾼 경우에만 현재 방향의 텍스트 여백 배치를 다시 계산한다. */
     ['ratioW','ratioH'].forEach(function(id){
       var el=E(id); if(el&&!el.__dpcTextMarginBalance){
         el.addEventListener('change',function(){ setTimeout(function(){applyAutomaticTextMarginBalance(true);},0); });
@@ -12915,7 +12961,7 @@ body.__sheet_processing #make.sheetBtn:focus{
         var bandB=Math.round(dy+h+fs*2+composite.band);
         if(isOuterRule) bandB=Math.min(bandB,Math.floor(cv.height-margin));
         var bandW=drawW, bandH=Math.max(1,bandB-bandY);
-        ctx.fillStyle='#fff'; ctx.fillRect(drawX,bandY,bandW,bandH);
+        /* 텍스트 여백은 별도 면을 칠하지 않고 시트 배경을 그대로 사용한다. */
         noteContentBounds(drawX,bandY,bandW,bandH);
         noteBounds(drawX,bandY,bandW,bandH);
       }else if(composite.side==='right'){
@@ -12923,7 +12969,7 @@ body.__sheet_processing #make.sheetBtn:focus{
         var bandR=Math.round(dx+w+fs*2+composite.band);
         if(isOuterRule) bandR=Math.min(bandR,Math.floor(cv.width-margin));
         var bandW=Math.max(1,bandR-bandX), bandH=drawH;
-        ctx.fillStyle='#fff'; ctx.fillRect(bandX,drawY,bandW,bandH);
+        /* 투명·검정·흰색 등 현재 시트 배경이 텍스트 영역에도 연속된다. */
         noteContentBounds(bandX,drawY,bandW,bandH);
         noteBounds(bandX,drawY,bandW,bandH);
       }
@@ -12960,7 +13006,7 @@ body.__sheet_processing #make.sheetBtn:focus{
     div.appendChild(cv); var pagesTarget=dpcRenderTarget || E('pages'); if(pagesTarget) pagesTarget.appendChild(div);
   }
   function makeBlankForCurrentLayout(){
-    var arr=A(); if(arr.length) return;
+    var arr=A(); if(arr.length) return false;
     var cols=Math.max(1,int1(gv('colsInput',4),4));
     var rows=Math.max(1,int1(gv('rowsInput',5),5));
     var count=cols*rows;
@@ -12968,8 +13014,8 @@ body.__sheet_processing #make.sheetBtn:focus{
     var cv=document.createElement('canvas'); cv.width=w; cv.height=h; var cx=cv.getContext('2d'); cx.fillStyle='#fff'; cx.fillRect(0,0,w,h); var src=cv.toDataURL('image/png');
     for(var i=0;i<count;i++) arr.push({type:'blank',ratio:ratio,file:{name:ratio+'_'+String(i+1).padStart(2,'0')+'.png'},src:src,selected:false,width:w,height:h,_ratio:16/9});
     if(E('frameOn')) E('frameOn').checked=true; if(E('frameSize')){E('frameSize').value=gv('frameSize','6')||'6';E('frameSize').disabled=false;} if(E('frameGap')){ var savedGap=gv('frameGap',null); E('frameGap').value=(savedGap==null?'50':savedGap); }
-    if(typeof window.renderFrameSheetItemList==='function') window.renderFrameSheetItemList();
     if(typeof hideFrameSheetIntroThumb==='function') hideFrameSheetIntroThumb();
+    return true;
   }
   async function syncNativeFinal(root){
     var pages=root || E('pages'); if(!pages) return;
@@ -12991,19 +13037,14 @@ body.__sheet_processing #make.sheetBtn:focus{
           if(img.complete && img.naturalWidth){ img.onload(); }
         }
         try{
-          if(cv.toBlob){
-            cv.toBlob(function(blob){
-              if(blob) done(URL.createObjectURL(blob),true);
-              else{
-                try{ done(cv.toDataURL('image/png'),false); }catch(e){ resolve(null); }
-              }
-            },'image/png');
-          }else{
-            done(cv.toDataURL('image/png'),false);
-          }
-        }catch(e){
-          try{ done(cv.toDataURL('image/png'),false); }catch(_e){ resolve(null); }
-        }
+          var blobPromise=(typeof window.getDpcSheetPngBlob==='function')
+            ? window.getDpcSheetPngBlob(cv)
+            : new Promise(function(res){ cv.toBlob(res,'image/png'); });
+          blobPromise.then(function(blob){
+            if(blob) done(URL.createObjectURL(blob),true);
+            else resolve(null);
+          }).catch(function(){ resolve(null); });
+        }catch(e){ resolve(null); }
       }));
     });
     var results=(await Promise.all(tasks)).filter(Boolean);
@@ -13012,13 +13053,18 @@ body.__sheet_processing #make.sheetBtn:focus{
       else setTimeout(res,16);
     });
     results.forEach(function(r){
+      if(!root.contains(r.cv)){
+        try{ if(r.img && r.img.__dpcBlobUrl) URL.revokeObjectURL(r.img.__dpcBlobUrl); }catch(e){}
+        return;
+      }
       try{ if(r.old && r.old.__dpcBlobUrl) URL.revokeObjectURL(r.old.__dpcBlobUrl); }catch(e){}
       if(r.old && r.old.parentNode) r.old.remove();
       if(!r.img.parentNode) r.cv.insertAdjacentElement('afterend',r.img);
       r.cv.classList.add('dpc-native-canvas-hidden');
       r.cv.setAttribute('aria-hidden','true');
     });
-    if(pages.classList) pages.classList.remove('dpc-generating-sheet');
+    if(root && root.classList) root.classList.remove('dpc-generating-sheet');
+    return true;
   }
   async function runMake(ev){
     if(ev){ ev.preventDefault(); ev.stopPropagation(); if(ev.stopImmediatePropagation) ev.stopImmediatePropagation(); }
@@ -13066,7 +13112,8 @@ body.__sheet_processing #make.sheetBtn:focus{
       document.body.appendChild(staging);
       dpcRenderTarget=staging;
       if(pages){ pages.classList.add('dpc-generating-sheet'); }
-      var data=A(); if(!data.length){ makeBlankForCurrentLayout(); data=A(); }
+      var madeInitialBlanks=false;
+      var data=A(); if(!data.length){ madeInitialBlanks=makeBlankForCurrentLayout(); data=A(); }
       if(!data.length){ if(pages) pages.classList.remove('dpc-generating-sheet'); return false; }
       for(var i=0;i<data.length;i++) await ensureDim(data[i]);
       var gs=grouped(data,generationSelection), pageNo=1,total=0;
@@ -13075,18 +13122,27 @@ body.__sheet_processing #make.sheetBtn:focus{
         var per=Math.max(1,(Math.max(1,opt.c||1)*Math.max(1,opt.r||1)));
         for(var s=0;s<g.list.length;s+=per){ total++; await drawPage(g.list.slice(s,s+per),opt,pageNo++); }
       }
+      /* 완성 캔버스마다 PNG를 정확히 한 번 만들고, 미리보기와 저장이 같은 Blob을 공유한다. */
+      await syncNativeFinal(staging);
       /* 기존 생성기의 표시 동기화 규칙을 유지한다.
        * 그룹별 계산은 임시 UI에서 수행되므로, 생성이 끝난 뒤 첫 페이지에 실제 적용된
        * 추천값(고정 항목은 applyLocks로 보존됨)을 메인 숫자 입력창에 다시 반영한다. */
       if(gs.length && gs[0].opt) applyOpt(gs[0].opt);
       if(info) info.textContent='총 '+data.length+'컷 / '+total+'페이지 생성';
-      await syncNativeFinal(staging);
       if(pages){
+        Array.prototype.forEach.call(pages.querySelectorAll('img.dpc-sheet-native-img'),function(img){
+          try{ if(img.__dpcBlobUrl) URL.revokeObjectURL(img.__dpcBlobUrl); }catch(e){}
+        });
         pages.innerHTML='';
         while(staging.firstChild) pages.appendChild(staging.firstChild);
+        pages.classList.remove('dpc-generating-sheet');
       }
       dpcRenderTarget=null;
       if(staging && staging.parentNode) staging.parentNode.removeChild(staging);
+      /* 첫 생성에만 필요한 CUT 목록 DOM 구성은 완성 시트 표시를 막지 않는다. */
+      if(madeInitialBlanks && typeof window.renderFrameSheetItemList==='function'){
+        setTimeout(function(){ window.renderFrameSheetItemList(); },0);
+      }
       if(typeof syncCutListVisibility==='function') syncCutListVisibility();
       /* v48: do not call legacy page-meta normalizer; drawPage already writes final per-page meta. */
       if(typeof syncFrameSheetOptionLabels==='function') syncFrameSheetOptionLabels();
@@ -13116,6 +13172,8 @@ body.__sheet_processing #make.sheetBtn:focus{
     var clone=old.cloneNode(true); clone.id=old.id; old.parentNode.replaceChild(clone,old);
     clone.onclick=runMake; clone.addEventListener('click',runMake,true);
     clone.__dpcV47CleanAuthority=true;
+    clone.disabled=false;
+    clone.removeAttribute('aria-busy');
   });
 })();
 </script>
