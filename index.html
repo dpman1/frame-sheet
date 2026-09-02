@@ -12325,10 +12325,7 @@ body.__sheet_processing #make.sheetBtn:focus{
   margin-left:auto!important;
   margin-right:auto!important;
 }
-#pages.dpc-generating-sheet .page img.dpc-sheet-native-img{display:none!important;}
-#pages .page{overflow:visible!important;}
-#pages .page canvas.dpc-native-canvas-hidden{display:none!important;}
-#pages .page img.dpc-sheet-native-img.dpc-ready{
+#pages .page canvas:not(.dpc-native-canvas-hidden){
   display:block!important;
   width:auto!important;
   max-width:100%!important;
@@ -12336,10 +12333,34 @@ body.__sheet_processing #make.sheetBtn:focus{
   max-height:calc(100dvh - 74px)!important;
   margin-left:auto!important;
   margin-right:auto!important;
+}
+#pages.dpc-generating-sheet .page img.dpc-sheet-native-img{display:none!important;}
+#pages .page{overflow:visible!important;}
+#pages .page .dpc-sheet-preview-stack{
+  display:grid!important;
+  width:fit-content!important;
+  max-width:100%!important;
+  margin-left:auto!important;
+  margin-right:auto!important;
+}
+#pages .page .dpc-sheet-preview-stack > canvas,
+#pages .page .dpc-sheet-preview-stack > img.dpc-sheet-native-img{
+  grid-area:1 / 1!important;
+  align-self:center!important;
+  justify-self:center!important;
+}
+#pages .page img.dpc-sheet-native-img.dpc-ready{
+  display:block!important;
+  width:auto!important;
+  max-width:100%!important;
+  height:auto!important;
+  max-height:calc(100dvh - 74px)!important;
+  margin:0!important;
   object-fit:contain!important;
   object-position:center center!important;
-  border:1px solid #aaa!important;
-  box-sizing:border-box!important;
+  border:0!important;
+  opacity:0!important;
+  z-index:2!important;
   -webkit-touch-callout:default!important;
   -webkit-user-select:auto!important;
   user-select:auto!important;
@@ -12442,6 +12463,23 @@ body.__sheet_processing #make.sheetBtn:focus{
   }
   function frameLabel(it){ return groupKey(it); }
   function sameBucketPage(list){ if(!list||!list.length) return true; var k=majorBucket(list[0]); return list.every(function(it){return majorBucket(it)===k;}); }
+  var decodedImageCache=new WeakMap();
+  function decodedImage(it){
+    if(!it || it.type==='blank') return Promise.resolve(null);
+    var cached=decodedImageCache.get(it);
+    if(cached) return cached;
+    var promise=new Promise(function(resolve){
+      var im=new Image();
+      var settled=false;
+      function done(){ if(settled) return; settled=true; resolve(im); }
+      im.onload=done;
+      im.onerror=done;
+      im.src=it.src;
+      if(im.complete && (im.naturalWidth||im.width)) done();
+    });
+    decodedImageCache.set(it,promise);
+    return promise;
+  }
   async function ensureDim(it){
     if(!it) return;
     if(it.type==='blank'){
@@ -12450,8 +12488,7 @@ body.__sheet_processing #make.sheetBtn:focus{
       return;
     }
     if(it.width && it.height && it._ratio) return;
-    var im=new Image();
-    await new Promise(function(res){ im.onload=res; im.onerror=res; im.src=it.src; });
+    var im=await decodedImage(it);
     if(im.naturalWidth || im.width){ it.width=im.naturalWidth||im.width; it.height=im.naturalHeight||im.height; it._ratio=it.width/it.height; }
   }
   function readOpt(){ return { c:int1(gv('colsInput',4),4), r:int1(gv('rowsInput',5),5), rw:num(gv('ratioW',4),4), rh:num(gv('ratioH',3),3), flow:gv('flow','vertical')||'vertical', mg:gv('margin',''), gp:gv('frameGap',''), fit:gv('fitMode','pixel')||'pixel', cutSize:gv('cutSizeMode','auto')||'auto' }; }
@@ -12955,7 +12992,7 @@ body.__sheet_processing #make.sheetBtn:focus{
         ctx.fillStyle='#000'; ctx.fillRect(bx,by,bw,bh);
       }
       if(it.type==='blank'){ ctx.fillStyle='#fff'; ctx.fillRect(drawX,drawY,drawW,drawH); }
-      else{ var img=new Image(); await new Promise(function(res){img.onload=res;img.onerror=res;img.src=it.src;}); if(img.naturalWidth||img.width) ctx.drawImage(img,drawX,drawY,drawW,drawH); }
+      else{ var img=await decodedImage(it); if(img&&(img.naturalWidth||img.width)) ctx.drawImage(img,drawX,drawY,drawW,drawH); }
       if(composite.side==='bottom'){
         var bandY=Math.round(dy+h+fs*2);
         var bandB=Math.round(dy+h+fs*2+composite.band);
@@ -13003,7 +13040,10 @@ body.__sheet_processing #make.sheetBtn:focus{
     var metaText=parts.slice(0,5).join(',')+' / '+sheetTxt+' / '+cols+'×'+rows;
     div.setAttribute('data-dpc-page-meta',metaText);
     div.innerHTML='<b class="dpc-page-titleline">페이지 '+pageNo+'<span class="dpc-page-meta-inline">'+metaText+'</span></b>';
-    div.appendChild(cv); var pagesTarget=dpcRenderTarget || E('pages'); if(pagesTarget) pagesTarget.appendChild(div);
+    var previewStack=document.createElement('div');
+    previewStack.className='dpc-sheet-preview-stack';
+    previewStack.appendChild(cv);
+    div.appendChild(previewStack); var pagesTarget=dpcRenderTarget || E('pages'); if(pagesTarget) pagesTarget.appendChild(div);
   }
   function makeBlankForCurrentLayout(){
     var arr=A(); if(arr.length) return false;
@@ -13019,6 +13059,11 @@ body.__sheet_processing #make.sheetBtn:focus{
   }
   async function syncNativeFinal(root){
     var pages=root || E('pages'); if(!pages) return;
+    /* 완성 캔버스를 먼저 실제 화면에 그린 뒤 저장용 PNG 작업을 시작한다. */
+    await new Promise(function(res){
+      if(window.requestAnimationFrame) requestAnimationFrame(function(){ requestAnimationFrame(res); });
+      else setTimeout(res,16);
+    });
     var tasks=[];
     Array.prototype.forEach.call(pages.querySelectorAll('.page'),function(pg){
       var cv=pg.querySelector('canvas'); if(!cv) return;
@@ -13048,10 +13093,6 @@ body.__sheet_processing #make.sheetBtn:focus{
       }));
     });
     var results=(await Promise.all(tasks)).filter(Boolean);
-    await new Promise(function(res){
-      if(window.requestAnimationFrame) requestAnimationFrame(function(){ requestAnimationFrame(res); });
-      else setTimeout(res,16);
-    });
     results.forEach(function(r){
       if(!root.contains(r.cv)){
         try{ if(r.img && r.img.__dpcBlobUrl) URL.revokeObjectURL(r.img.__dpcBlobUrl); }catch(e){}
@@ -13059,9 +13100,16 @@ body.__sheet_processing #make.sheetBtn:focus{
       }
       try{ if(r.old && r.old.__dpcBlobUrl) URL.revokeObjectURL(r.old.__dpcBlobUrl); }catch(e){}
       if(r.old && r.old.parentNode) r.old.remove();
-      if(!r.img.parentNode) r.cv.insertAdjacentElement('afterend',r.img);
-      r.cv.classList.add('dpc-native-canvas-hidden');
-      r.cv.setAttribute('aria-hidden','true');
+      var stack=r.cv.parentNode&&r.cv.parentNode.classList&&r.cv.parentNode.classList.contains('dpc-sheet-preview-stack')
+        ? r.cv.parentNode
+        : null;
+      if(!stack){
+        stack=document.createElement('div');
+        stack.className='dpc-sheet-preview-stack';
+        r.cv.parentNode.insertBefore(stack,r.cv);
+        stack.appendChild(r.cv);
+      }
+      if(!r.img.parentNode) stack.appendChild(r.img);
     });
     if(root && root.classList) root.classList.remove('dpc-generating-sheet');
     return true;
@@ -13070,6 +13118,7 @@ body.__sheet_processing #make.sheetBtn:focus{
     if(ev){ ev.preventDefault(); ev.stopPropagation(); if(ev.stopImmediatePropagation) ev.stopImmediatePropagation(); }
     var makeBtn=E('make');
     if(makeBtn && makeBtn.__dpcSheetWorking) return false;
+    var nativeSyncStarted=false;
     var workStart=0;
     var minVisibleMs=800;
     function now(){ return (window.performance && performance.now) ? performance.now() : Date.now(); }
@@ -13122,8 +13171,6 @@ body.__sheet_processing #make.sheetBtn:focus{
         var per=Math.max(1,(Math.max(1,opt.c||1)*Math.max(1,opt.r||1)));
         for(var s=0;s<g.list.length;s+=per){ total++; await drawPage(g.list.slice(s,s+per),opt,pageNo++); }
       }
-      /* 완성 캔버스마다 PNG를 정확히 한 번 만들고, 미리보기와 저장이 같은 Blob을 공유한다. */
-      await syncNativeFinal(staging);
       /* 기존 생성기의 표시 동기화 규칙을 유지한다.
        * 그룹별 계산은 임시 UI에서 수행되므로, 생성이 끝난 뒤 첫 페이지에 실제 적용된
        * 추천값(고정 항목은 applyLocks로 보존됨)을 메인 숫자 입력창에 다시 반영한다. */
@@ -13139,6 +13186,14 @@ body.__sheet_processing #make.sheetBtn:focus{
       }
       dpcRenderTarget=null;
       if(staging && staging.parentNode) staging.parentNode.removeChild(staging);
+      /* 생성 완료는 캔버스 표시 시점이다. PNG와 모바일 길게 누르기용 이미지는
+         화면 페인트 뒤 동일 Blob 캐시에서 백그라운드로 준비한다. */
+      await paintReady();
+      nativeSyncStarted=true;
+      syncNativeFinal(pages).catch(function(error){
+        console.error(error);
+        if(pages&&pages.classList) pages.classList.remove('dpc-generating-sheet');
+      });
       /* 첫 생성에만 필요한 CUT 목록 DOM 구성은 완성 시트 표시를 막지 않는다. */
       if(madeInitialBlanks && typeof window.renderFrameSheetItemList==='function'){
         setTimeout(function(){ window.renderFrameSheetItemList(); },0);
@@ -13164,14 +13219,16 @@ body.__sheet_processing #make.sheetBtn:focus{
       dpcRenderTarget=null;
       var oldStaging=document.querySelector('[data-dpc-sheet-staging="1"]');
       if(oldStaging && oldStaging.parentNode) oldStaging.parentNode.removeChild(oldStaging);
-      var pages2=E('pages'); if(pages2) pages2.classList.remove('dpc-generating-sheet');
+      var pages2=E('pages'); if(pages2&&!nativeSyncStarted) pages2.classList.remove('dpc-generating-sheet');
     }
   }
   ready(function(){
     var old=E('make'); if(!old) return;
     var clone=old.cloneNode(true); clone.id=old.id; old.parentNode.replaceChild(clone,old);
-    clone.onclick=runMake; clone.addEventListener('click',runMake,true);
-    clone.__dpcV47CleanAuthority=true;
+    clone.removeAttribute('onclick');
+    clone.onclick=null;
+    clone.addEventListener('click',runMake,true);
+    clone.__dpcV49CleanAuthority=true;
     clone.disabled=false;
     clone.removeAttribute('aria-busy');
   });
