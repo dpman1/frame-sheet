@@ -4228,6 +4228,8 @@ if(bgColor.value!=="transparent"){
 (function(){
   'use strict';
   var pngCache=new WeakMap();
+  var dataUrlCache=new WeakMap();
+  var isKakao=/KAKAOTALK/i.test(navigator.userAgent||'');
 
   function dataUrlBlob(dataUrl){
     var parts=String(dataUrl||'').split(',');
@@ -4260,6 +4262,24 @@ if(bgColor.value!=="transparent"){
   }
   window.getDpcSheetPngBlob=function(canvas){ return pngRecord(canvas).promise; };
   window.peekDpcSheetPngBlob=function(canvas){ var record=pngCache.get(canvas); return record&&record.blob||null; };
+  function dataUrlRecord(canvas){
+    var record=dataUrlCache.get(canvas);
+    if(record) return record;
+    record={value:null,promise:null};
+    record.promise=pngRecord(canvas).promise.then(function(blob){
+      return new Promise(function(resolve,reject){
+        var reader=new FileReader();
+        reader.onload=function(){ record.value=String(reader.result||''); resolve(record.value); };
+        reader.onerror=function(){ reject(reader.error||new Error('PNG 변환에 실패했습니다.')); };
+        reader.readAsDataURL(blob);
+      });
+    }).catch(function(error){ dataUrlCache.delete(canvas); throw error; });
+    dataUrlCache.set(canvas,record);
+    return record;
+  }
+  window.getDpcSheetPngDataUrl=function(canvas){ return dataUrlRecord(canvas).promise; };
+  window.peekDpcSheetPngDataUrl=function(canvas){ var record=dataUrlCache.get(canvas); return record&&record.value||''; };
+  window.isDpcKakaoBrowser=function(){ return isKakao; };
 
   function prefix(){
     var input=document.getElementById('prefix');
@@ -4276,6 +4296,21 @@ if(bgColor.value!=="transparent"){
     a.remove();
     setTimeout(function(){ URL.revokeObjectURL(url); },30000);
   }
+  function downloadUrl(url,name){
+    var a=document.createElement('a');
+    a.href=url;
+    a.download=name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  function kakaoFileSet(list,base){
+    var blobs=list.map(window.peekDpcSheetPngBlob);
+    if(blobs.some(function(blob){return !blob;})) return null;
+    return blobs.map(function(blob,index){
+      return new File([blob],base+'-'+String(index+1).padStart(3,'0')+'.png',{type:'image/png'});
+    });
+  }
   async function withBusy(button,job){
     if(button.__dpcSaving) return;
     button.__dpcSaving=true;
@@ -4289,9 +4324,27 @@ if(bgColor.value!=="transparent"){
     var button=event.currentTarget;
     var list=canvases();
     if(!list.length){ alert('먼저 시트를 생성하세요'); return; }
+    var base=prefix();
+    if(isKakao){
+      if(list.length===1){
+        var readyUrl=window.peekDpcSheetPngDataUrl(list[0]);
+        if(readyUrl){ downloadUrl(readyUrl,base+'-001.png'); return; }
+      }else{
+        var files=kakaoFileSet(list,base);
+        if(files && navigator.share && (!navigator.canShare || navigator.canShare({files:files}))){
+          navigator.share({files:files}).catch(function(error){
+            if(error && error.name!=='AbortError'){ console.error(error); alert('파일 저장 중 오류가 발생했습니다.'); }
+          });
+          return;
+        }
+      }
+    }
     withBusy(button,async function(){
       var blobs=await Promise.all(list.map(window.getDpcSheetPngBlob));
-      var base=prefix();
+      if(isKakao && list.length===1){
+        downloadUrl(await window.getDpcSheetPngDataUrl(list[0]),base+'-001.png');
+        return;
+      }
       blobs.forEach(function(blob,index){ download(blob,base+'-'+String(index+1).padStart(3,'0')+'.png'); });
     });
   }
@@ -13082,13 +13135,20 @@ body.__sheet_processing #make.sheetBtn:focus{
           if(img.complete && img.naturalWidth){ img.onload(); }
         }
         try{
-          var blobPromise=(typeof window.getDpcSheetPngBlob==='function')
-            ? window.getDpcSheetPngBlob(cv)
-            : new Promise(function(res){ cv.toBlob(res,'image/png'); });
-          blobPromise.then(function(blob){
-            if(blob) done(URL.createObjectURL(blob),true);
-            else resolve(null);
-          }).catch(function(){ resolve(null); });
+          var kakao=(typeof window.isDpcKakaoBrowser==='function' && window.isDpcKakaoBrowser());
+          if(kakao && typeof window.getDpcSheetPngDataUrl==='function'){
+            window.getDpcSheetPngDataUrl(cv).then(function(url){
+              if(url) done(url,false); else resolve(null);
+            }).catch(function(){ resolve(null); });
+          }else{
+            var blobPromise=(typeof window.getDpcSheetPngBlob==='function')
+              ? window.getDpcSheetPngBlob(cv)
+              : new Promise(function(res){ cv.toBlob(res,'image/png'); });
+            blobPromise.then(function(blob){
+              if(blob) done(URL.createObjectURL(blob),true);
+              else resolve(null);
+            }).catch(function(){ resolve(null); });
+          }
         }catch(e){ resolve(null); }
       }));
     });
