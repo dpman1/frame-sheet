@@ -3425,6 +3425,7 @@ body.dpc-tools-open .dpc-tools-panel{display:block}
 <div class="savebar">
   <button id="saveAll">SHEET 모두 저장</button>
   <button id="saveZip">압축파일 저장</button>
+  <button id="savePptx" type="button">PPTX 저장</button>
 </div>
 
 </div>
@@ -11496,6 +11497,12 @@ body.__sheet_processing #make.sheetBtn:focus{
     if(!crop){ crop=document.createElement('input'); crop.type='checkbox'; crop.id='dpcCropResidualOuter'; }
     var textMarginOn=E('textMarginOn');
     if(!textMarginOn){ textMarginOn=document.createElement('input'); textMarginOn.type='checkbox'; textMarginOn.id='textMarginOn'; }
+    var cutNumberOn=E('cutNumberOn');
+    if(!cutNumberOn){ cutNumberOn=document.createElement('input'); cutNumberOn.type='checkbox'; cutNumberOn.id='cutNumberOn'; }
+    var cutNumberInside=E('cutNumberInside');
+    if(!cutNumberInside){ cutNumberInside=document.createElement('input'); cutNumberInside.type='radio'; cutNumberInside.name='dpcCutNumberPosition'; cutNumberInside.id='cutNumberInside'; cutNumberInside.value='inside'; cutNumberInside.checked=true; }
+    var cutNumberOutside=E('cutNumberOutside');
+    if(!cutNumberOutside){ cutNumberOutside=document.createElement('input'); cutNumberOutside.type='radio'; cutNumberOutside.name='dpcCutNumberPosition'; cutNumberOutside.id='cutNumberOutside'; cutNumberOutside.value='outside'; }
     clean.innerHTML='';
 
     var r1=document.createElement('div'); r1.className='dpc-adv-row dpc-adv-row-1';
@@ -11578,6 +11585,22 @@ body.__sheet_processing #make.sheetBtn:focus{
     var textMarginLab=document.createElement('label'); textMarginLab.className='dpc-adv-check dpc-text-margin-check';
     textMarginLab.appendChild(textMarginOn); textMarginLab.appendChild(document.createTextNode('텍스트 여백'));
     r4.appendChild(textMarginLab);
+    var numberLab=document.createElement('label'); numberLab.className='dpc-adv-check dpc-cut-number-check';
+    numberLab.appendChild(cutNumberOn); numberLab.appendChild(document.createTextNode('컷 넘버링'));
+    var insideLab=document.createElement('label'); insideLab.className='dpc-adv-radio dpc-cut-number-position';
+    insideLab.appendChild(cutNumberInside); insideLab.appendChild(document.createTextNode('안쪽'));
+    var outsideLab=document.createElement('label'); outsideLab.className='dpc-adv-radio dpc-cut-number-position';
+    outsideLab.appendChild(cutNumberOutside); outsideLab.appendChild(document.createTextNode('바깥쪽'));
+    r4.appendChild(numberLab); r4.appendChild(insideLab); r4.appendChild(outsideLab);
+    function syncCutNumberControls(){
+      var enabled=!!cutNumberOn.checked;
+      cutNumberInside.disabled=!enabled;
+      cutNumberOutside.disabled=!enabled || !textMarginOn.checked;
+      if(cutNumberOutside.disabled && cutNumberOutside.checked) cutNumberInside.checked=true;
+      insideLab.classList.toggle('is-disabled',!enabled);
+      outsideLab.classList.toggle('is-disabled',!enabled || !textMarginOn.checked);
+    }
+    cutNumberOn.onchange=syncCutNumberControls;
     function applyAutomaticTextMarginBalance(recommendLayout){
       if(!textMarginOn.checked) return;
       if(recommendLayout && !document.getElementById('lockLayout')?.checked){
@@ -11619,6 +11642,7 @@ body.__sheet_processing #make.sheetBtn:focus{
              일반 추천을 다시 실행하거나 과거 결과 이전의 규격으로 돌아가지 않는다. */
         }
       }
+      syncCutNumberControls();
       if(typeof syncFrameSheetOptionLabels==='function') syncFrameSheetOptionLabels();
     };
     /* 방향 변경은 applyUserFlow가 동일한 컷수의 방향별 추천 세트를 다시 계산한다.
@@ -11641,6 +11665,7 @@ body.__sheet_processing #make.sheetBtn:focus{
       if(!crop.checked && typeof window.dpcRestoreRecommendedRatioAfterCrop==='function') window.dpcRestoreRecommendedRatioAfterCrop();
     });
     syncCropByRule();
+    syncCutNumberControls();
     clean.appendChild(r1); clean.appendChild(r2); clean.appendChild(r3); clean.appendChild(r4);
   }
   ready(function(){
@@ -11984,7 +12009,11 @@ body.__sheet_processing #make.sheetBtn:focus{
   gap:8px!important;
 }
 #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-text-margin-check{
-  min-width:116px!important;
+  min-width:0!important;
+  margin-right:8px!important;
+}
+#advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-cut-number-position{
+  gap:3px!important;
 }
 #advancedOptions #dpcAdvClean .dpc-adv-row-2 .dpc-adv-rule-title{
   margin-right:2px!important;
@@ -12035,8 +12064,9 @@ body.__sheet_processing #make.sheetBtn:focus{
   }
   #advancedOptions #dpcAdvClean .dpc-adv-row{margin:6px 0!important;min-height:34px!important;}
   #advancedOptions #dpcAdvClean .dpc-adv-row-2{gap:7px!important;}
-  #advancedOptions #dpcAdvClean .dpc-adv-row-4{gap:6px!important;}
-  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-text-margin-check{min-width:108px!important;}
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4{gap:4px!important;}
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-text-margin-check{min-width:0!important;margin-right:3px!important;}
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-cut-number-position{gap:2px!important;}
 }
 @media(max-width:380px){
   #advancedOptions #dpcAdvClean .dpc-adv-row-2{gap:5px!important;}
@@ -12717,7 +12747,7 @@ body.__sheet_processing #make.sheetBtn:focus{
     return out;
   }
   var dpcRenderTarget=null;
-  async function drawPage(list,opt,pageNo){
+  async function drawPage(list,opt,pageNo,numberStart,globalReferenceItem){
     var cols=Math.max(1,opt.c), rows=Math.max(1,opt.r);
     var max=0; list.forEach(function(it){ max=Math.max(max,normRatio(it)); });
     // 규격 고정 상태가 아닐 때만 기존 초와이드 보호 규칙을 적용한다.
@@ -12728,6 +12758,11 @@ body.__sheet_processing #make.sheetBtn:focus{
     var outerIsBlank=outerRaw==='';
     var fs=(E('frameOn')&&E('frameOn').checked)?int0(gv('frameSize',6),6):0;
     var textMarginEnabled=!!(E('textMarginOn')&&E('textMarginOn').checked);
+    var cutNumberEnabled=!!(E('cutNumberOn')&&E('cutNumberOn').checked);
+    var numberChoice=document.querySelector('input[name="dpcCutNumberPosition"]:checked');
+    var cutNumberPosition=(numberChoice&&numberChoice.value)||'inside';
+    if(cutNumberPosition==='outside'&&!textMarginEnabled) cutNumberPosition='inside';
+    numberStart=Math.max(1,parseInt(numberStart,10)||1);
     var textMarginRate=1;
     function textCompositeForImage(ar,imageW,imageH){
       imageW=Math.max(1,Number(imageW)||1); imageH=Math.max(1,Number(imageH)||1);
@@ -12854,11 +12889,10 @@ body.__sheet_processing #make.sheetBtn:focus{
     var pixelLayout=null;
     if(opt.fit==='pixel' && list.length){
       for(var pd=0; pd<list.length; pd++) await ensureDim(list[pd]);
-      /* v74 orthodox mixed-ratio pixel sizing
-         기존 규칙 복구: pixel/original 모드에서도 페이지 안의 모든 컷은 첫 컷의 세로 크기를 기준 높이로 통일한다.
-         뒤에 추가한 고해상도 이미지의 원본 width/height를 그대로 쓰지 않는다.
-         비율이 다른 컷은 높이는 같고, 가로폭만 rawRatio에 따라 달라진다. */
-      var refItem=list[0];
+      /* 그룹과 페이지를 나누기 전 전체 첫 컷을 하나의 크기 기준으로 공유한다.
+         가로 배치는 기준 높이, 세로 배치는 기준 폭을 사용하고 각 컷의 비율만 유지한다. */
+      var refItem=globalReferenceItem||list[0];
+      await ensureDim(refItem);
       var cutMode=gv('cutSizeMode','auto')||'auto';
       if(cutMode==='auto') cutMode=(opt.flow==='horizontal')?'height':'width';
       var refH=Math.max(1,Number(refItem && refItem.height)||540);
@@ -12932,6 +12966,54 @@ body.__sheet_processing #make.sheetBtn:focus{
     }
 
     var cv=document.createElement('canvas'); cv.width=Math.ceil(W); cv.height=Math.ceil(H); var ctx=cv.getContext('2d'); bgFill(ctx,cv.width,cv.height);
+    function canvasTextColor(){
+      var bg=String(gv('bgColor','#ffffff')||'#ffffff');
+      if(bg==='transparent') return '#000000';
+      var hex=bg.replace(/^#/,'');
+      if(!/^[0-9a-f]{6}$/i.test(hex)) hex='ffffff';
+      var r=parseInt(hex.slice(0,2),16), g=parseInt(hex.slice(2,4),16), b=parseInt(hex.slice(4,6),16);
+      return (r*.299+g*.587+b*.114)<150?'#ffffff':'#000000';
+    }
+    function drawCutNumber(label,mode,rect){
+      var frameH=Math.max(1,Number(rect.frameH)||Number(rect.h)||1);
+      var fontPx=mode==='inside'
+        ? Math.max(8,Math.round(frameH*.10))
+        : Math.max(9,Math.round(frameH*.115));
+      ctx.save();
+      ctx.font='700 '+fontPx+'px "Noto Sans KR", Arial, sans-serif';
+      ctx.textBaseline='alphabetic';
+      var metrics=ctx.measureText(label);
+      var textW=Math.ceil(metrics.width);
+      var ascent=Math.ceil(metrics.actualBoundingBoxAscent||fontPx*.8);
+      var descent=Math.ceil(metrics.actualBoundingBoxDescent||fontPx*.2);
+      if(mode==='inside'){
+        /* 숫자 모양과 무관하게 같은 행 높이를 사용하고 글자 상하에 1px을 보장한다. */
+        var lineMetrics=ctx.measureText('Hg');
+        var lineAscent=Math.ceil(lineMetrics.actualBoundingBoxAscent||fontPx*.8);
+        var lineDescent=Math.ceil(lineMetrics.actualBoundingBoxDescent||fontPx*.2);
+        var lineInkH=Math.max(1,lineAscent+lineDescent);
+        var padX=Math.max(1,Math.round(fontPx*.08));
+        var padY=1;
+        var boxX=rect.x, boxY=rect.y;
+        var boxW=textW+padX*2, boxH=lineInkH+padY*2;
+        var inkOffset=Math.max(0,Math.floor((lineInkH-(ascent+descent))/2));
+        ctx.fillStyle='rgba(0,0,0,.55)';
+        ctx.fillRect(boxX,boxY,boxW,boxH);
+        ctx.fillStyle='#ffffff';
+        ctx.fillText(label,boxX+padX,boxY+padY+inkOffset+ascent);
+        ctx.restore();
+        return {x:boxX,y:boxY,w:boxW,h:boxH,mode:'inside',label:label,padX:padX,padY:padY,padTop:0,fontPx:fontPx};
+      }
+      /* 바깥쪽 번호는 프레임과 정렬축은 유지하되, 맞닿는 축에만
+         한 줄 간격보다 작은 공통 여유를 둔다. */
+      var edgeGap=Math.max(2,Math.round(fontPx*.18));
+      var padLeft=rect.side==='right'?edgeGap:0;
+      var padTop=rect.side==='bottom'?edgeGap:0;
+      ctx.fillStyle=canvasTextColor();
+      ctx.fillText(label,rect.x+padLeft,rect.y+padTop+ascent);
+      ctx.restore();
+      return {x:rect.x,y:rect.y,w:rect.w,h:rect.h,mode:'outside',label:label,padX:padLeft,padTop:padTop,fontPx:fontPx};
+    }
 
     var layoutW, layoutH, allW, allH, sx, sy;
     if(pixelLayout){
@@ -12951,6 +13033,10 @@ body.__sheet_processing #make.sheetBtn:focus{
 
     var isOuterRule=!center && !isGapRule;
     var drawnBounds=null, contentBounds=null;
+    /* PPTX export metadata is captured from this single rendering authority.
+       The exporter never reimplements the sheet layout formula. */
+    var pptPlacements=[];
+    var pptCropX=0, pptCropY=0;
     function addBounds(current,x,y,w,h){
       var x1=x, y1=y, x2=x+w, y2=y+h;
       if(!current) return {minX:x1,minY:y1,maxX:x2,maxY:y2};
@@ -13046,25 +13132,41 @@ body.__sheet_processing #make.sheetBtn:focus{
       }
       if(it.type==='blank'){ ctx.fillStyle='#fff'; ctx.fillRect(drawX,drawY,drawW,drawH); }
       else{ var img=await decodedImage(it); if(img&&(img.naturalWidth||img.width)) ctx.drawImage(img,drawX,drawY,drawW,drawH); }
+      var pptTextRect=null;
       if(composite.side==='bottom'){
         var bandY=Math.round(dy+h+fs*2);
         var bandB=Math.round(dy+h+fs*2+composite.band);
         if(isOuterRule) bandB=Math.min(bandB,Math.floor(cv.height-margin));
-        var bandW=drawW, bandH=Math.max(1,bandB-bandY);
+        var bandW=bw, bandH=Math.max(1,bandB-bandY);
         /* 텍스트 여백은 별도 면을 칠하지 않고 시트 배경을 그대로 사용한다. */
-        noteContentBounds(drawX,bandY,bandW,bandH);
-        noteBounds(drawX,bandY,bandW,bandH);
+        pptTextRect={x:bx,y:bandY,w:bandW,h:bandH,side:'bottom',frameH:drawH};
+        noteContentBounds(bx,bandY,bandW,bandH);
+        noteBounds(bx,bandY,bandW,bandH);
       }else if(composite.side==='right'){
         var bandX=Math.round(dx+w+fs*2);
         var bandR=Math.round(dx+w+fs*2+composite.band);
         if(isOuterRule) bandR=Math.min(bandR,Math.floor(cv.width-margin));
         var bandW=Math.max(1,bandR-bandX), bandH=drawH;
         /* 투명·검정·흰색 등 현재 시트 배경이 텍스트 영역에도 연속된다. */
+        pptTextRect={x:bandX,y:drawY,w:bandW,h:bandH,side:'right',frameH:drawH};
         noteContentBounds(bandX,drawY,bandW,bandH);
         noteBounds(bandX,drawY,bandW,bandH);
       }
+      var pptNumberRect=null;
+      if(cutNumberEnabled){
+        var numberText=String(numberStart+i);
+        if(cutNumberPosition==='outside'&&pptTextRect) pptNumberRect=drawCutNumber('#'+numberText,'outside',pptTextRect);
+        else pptNumberRect=drawCutNumber(numberText,'inside',{x:drawX,y:drawY,w:drawW,h:drawH});
+      }
       noteContentBounds(drawX,drawY,textMarginEnabled?drawW:compContentW,textMarginEnabled?drawH:compContentH);
       noteBounds(bx,by,bw,bh);
+      pptPlacements.push({
+        item:it,
+        image:{x:drawX,y:drawY,w:drawW,h:drawH},
+        frame:(E('frameOn')&&E('frameOn').checked&&fs>0)?{x:bx,y:by,w:bw,h:bh}:null,
+        text:pptTextRect,
+        number:pptNumberRect
+      });
     }
     if(cropResidual && drawnBounds){
       /*
@@ -13083,6 +13185,7 @@ body.__sheet_processing #make.sheetBtn:focus{
         var croppedCv=document.createElement('canvas'); croppedCv.width=newW; croppedCv.height=newH;
         var cctx=croppedCv.getContext('2d'); bgFill(cctx,newW,newH);
         cctx.drawImage(cv,cropX,cropY,newW,newH,0,0,newW,newH);
+        pptCropX=cropX; pptCropY=cropY;
         cv=croppedCv; ctx=cctx; cropped=true;
       }
     }
@@ -13092,6 +13195,17 @@ body.__sheet_processing #make.sheetBtn:focus{
     var sheetTxt=cropped?ratioTextFromWH(cv.width,cv.height,true):(sheetCanonical||ratioTextFromWH(opt.rw,opt.rh,false));
     var metaText=parts.slice(0,5).join(',')+' / '+sheetTxt+' / '+cols+'×'+rows;
     div.setAttribute('data-dpc-page-meta',metaText);
+    function shiftedRect(r){
+      return r ? {x:r.x-pptCropX,y:r.y-pptCropY,w:r.w,h:r.h,side:r.side||'',mode:r.mode||'',label:r.label||'',padX:Number(r.padX)||0,padY:Number(r.padY)||0,padTop:Number(r.padTop)||0,fontPx:Number(r.fontPx)||0} : null;
+    }
+    div.__dpcPptPage={
+      width:cv.width,
+      height:cv.height,
+      background:gv('bgColor','#ffffff'),
+      placements:pptPlacements.map(function(p){
+        return {item:p.item,image:shiftedRect(p.image),frame:shiftedRect(p.frame),text:shiftedRect(p.text),number:shiftedRect(p.number)};
+      })
+    };
     div.innerHTML='<b class="dpc-page-titleline">페이지 '+pageNo+'<span class="dpc-page-meta-inline">'+metaText+'</span></b>';
     var previewStack=document.createElement('div');
     previewStack.className='dpc-sheet-preview-stack';
@@ -13225,11 +13339,18 @@ body.__sheet_processing #make.sheetBtn:focus{
       var data=A(); if(!data.length){ madeInitialBlanks=makeBlankForCurrentLayout(); data=A(); }
       if(!data.length){ if(pages) pages.classList.remove('dpc-generating-sheet'); return false; }
       for(var i=0;i<data.length;i++) await ensureDim(data[i]);
-      var gs=grouped(data,generationSelection), pageNo=1,total=0;
+      var globalReferenceItem=data[0]||null;
+      if(globalReferenceItem) await ensureDim(globalReferenceItem);
+      var gs=grouped(data,generationSelection), pageNo=1,total=0,globalCutNo=1;
       for(var gi=0;gi<gs.length;gi++){
         var g=gs[gi], opt=g.opt||readOpt();
         var per=Math.max(1,(Math.max(1,opt.c||1)*Math.max(1,opt.r||1)));
-        for(var s=0;s<g.list.length;s+=per){ total++; await drawPage(g.list.slice(s,s+per),opt,pageNo++); }
+        for(var s=0;s<g.list.length;s+=per){
+          var pageList=g.list.slice(s,s+per);
+          total++;
+          await drawPage(pageList,opt,pageNo++,globalCutNo,globalReferenceItem);
+          globalCutNo+=pageList.length;
+        }
       }
       /* 기존 생성기의 표시 동기화 규칙을 유지한다.
        * 그룹별 계산은 임시 UI에서 수행되므로, 생성이 끝난 뒤 첫 페이지에 실제 적용된
@@ -14917,6 +15038,267 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
     };
     initializeGa4();
   }catch(_){}
+})();
+</script>
+<style id="dpc-pptx-export-style">
+.sheet-logo-image + .tool-card.top-card .savebar #savePptx{grid-column:1 / -1!important}
+#savePptx.is-working{opacity:.7!important;cursor:wait!important}
+</style>
+<script id="dpc-pptx-export-v2">
+/* PPTX export is an independent output adapter.
+   It consumes geometry captured by the final sheet renderer, embeds original
+   image bytes, and never recalculates or mutates the sheet layout. */
+(function(){
+  'use strict';
+  var PPTXGEN_URL='https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.min.js';
+  var JSZIP_URL='https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+  var imageDataCache=new WeakMap();
+  function E(id){return document.getElementById(id);}
+  function ready(fn){document.readyState==='loading'?document.addEventListener('DOMContentLoaded',fn,{once:true}):fn();}
+  function cleanColor(value,fallback){
+    var s=String(value||'').trim().replace(/^#/,'');
+    return /^[0-9a-f]{6}$/i.test(s)?s.toUpperCase():(fallback||'FFFFFF');
+  }
+  function textColorForBackground(value){
+    if(String(value||'')==='transparent') return '000000';
+    var c=cleanColor(value,'FFFFFF');
+    var r=parseInt(c.slice(0,2),16), g=parseInt(c.slice(2,4),16), b=parseInt(c.slice(4,6),16);
+    return (r*0.299+g*0.587+b*0.114)<150?'FFFFFF':'000000';
+  }
+  function fileStem(){
+    var prefix=E('prefix');
+    var s=String(prefix&&prefix.value||'SHEET').trim()||'SHEET';
+    s=s.replace(/[\\/:*?"<>|]+/g,'_').replace(/\.pptx$/i,'').trim();
+    return s||'SHEET';
+  }
+  function readBlob(blob){
+    return new Promise(function(resolve,reject){
+      var reader=new FileReader();
+      reader.onload=function(){resolve(String(reader.result||''));};
+      reader.onerror=function(){reject(reader.error||new Error('이미지 파일을 읽을 수 없습니다.'));};
+      reader.readAsDataURL(blob);
+    });
+  }
+  function loadImage(url){
+    return new Promise(function(resolve,reject){
+      var img=new Image();
+      img.onload=function(){resolve(img);};
+      img.onerror=function(){reject(new Error('PPTX용 이미지를 변환할 수 없습니다.'));};
+      img.src=url;
+    });
+  }
+  async function convertBlobToPng(blob){
+    var url=URL.createObjectURL(blob);
+    try{
+      var img=await loadImage(url);
+      var w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+      if(!w||!h) throw new Error('원본 이미지 해상도를 확인할 수 없습니다.');
+      var cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+      var cx=cv.getContext('2d',{alpha:true});
+      cx.drawImage(img,0,0,w,h);
+      var png=await new Promise(function(resolve){cv.toBlob(resolve,'image/png');});
+      if(!png) throw new Error('PPTX 호환 PNG 변환에 실패했습니다.');
+      return await readBlob(png);
+    }finally{URL.revokeObjectURL(url);}
+  }
+  function directPptMime(blob,name){
+    var mime=String(blob&&blob.type||'').toLowerCase();
+    var ext=(String(name||'').match(/\.([a-z0-9]+)$/i)||[])[1];
+    ext=String(ext||'').toLowerCase();
+    return /^(image\/(png|jpe?g|gif))$/.test(mime)||/^(png|jpe?g|gif)$/.test(ext);
+  }
+  async function itemImageData(item){
+    if(item&&typeof item==='object'&&imageDataCache.has(item)) return imageDataCache.get(item);
+    var promise=(async function(){
+      var original=item&&item.originalFile instanceof Blob?item.originalFile:null;
+      var current=item&&item.file instanceof Blob?item.file:null;
+      var blob=original||current;
+      if(blob){
+        var name=(original&&original.name)||(current&&current.name)||(item&&item.file&&item.file.name)||'';
+        return directPptMime(blob,name)?await readBlob(blob):await convertBlobToPng(blob);
+      }
+      var src=String(item&&item.src||'');
+      if(/^data:image\//i.test(src)) return src;
+      if(src){
+        var fetched=await fetch(src).then(function(r){if(!r.ok) throw new Error('이미지를 읽을 수 없습니다.');return r.blob();});
+        return directPptMime(fetched,'')?await readBlob(fetched):await convertBlobToPng(fetched);
+      }
+      throw new Error('PPTX에 넣을 원본 이미지가 없습니다.');
+    })();
+    if(item&&typeof item==='object') imageDataCache.set(item,promise);
+    return promise;
+  }
+  function ensurePptxGen(){
+    if(window.PptxGenJS) return Promise.resolve(window.PptxGenJS);
+    if(window.__dpcPptxGenPromise) return window.__dpcPptxGenPromise;
+    window.__dpcPptxGenPromise=new Promise(function(resolve,reject){
+      var script=document.createElement('script');
+      var timer=setTimeout(function(){reject(new Error('PPTX 모듈을 불러오지 못했습니다. 네트워크를 확인해 주세요.'));},20000);
+      script.src=PPTXGEN_URL; script.async=true;
+      script.onload=function(){clearTimeout(timer);window.PptxGenJS?resolve(window.PptxGenJS):reject(new Error('PPTX 모듈 초기화에 실패했습니다.'));};
+      script.onerror=function(){clearTimeout(timer);reject(new Error('PPTX 모듈을 불러오지 못했습니다.'));};
+      (document.head||document.documentElement).appendChild(script);
+    }).catch(function(err){window.__dpcPptxGenPromise=null;throw err;});
+    return window.__dpcPptxGenPromise;
+  }
+  function ensureJsZip(){
+    if(window.JSZip) return Promise.resolve(window.JSZip);
+    if(window.__dpcJsZipPromise) return window.__dpcJsZipPromise;
+    window.__dpcJsZipPromise=new Promise(function(resolve,reject){
+      var script=document.createElement('script');
+      var timer=setTimeout(function(){reject(new Error('PPTX 편집 모듈을 불러오지 못했습니다. 네트워크를 확인해 주세요.'));},20000);
+      script.src=JSZIP_URL; script.async=true;
+      script.onload=function(){clearTimeout(timer);window.JSZip?resolve(window.JSZip):reject(new Error('PPTX 편집 모듈 초기화에 실패했습니다.'));};
+      script.onerror=function(){clearTimeout(timer);reject(new Error('PPTX 편집 모듈을 불러오지 못했습니다.'));};
+      (document.head||document.documentElement).appendChild(script);
+    }).catch(function(err){window.__dpcJsZipPromise=null;throw err;});
+    return window.__dpcJsZipPromise;
+  }
+  function xmlFontDefaults(xml){
+    return xml
+      .replace(/<a:ea typeface="[^"]*"\/>/g,'<a:ea typeface="Noto Sans KR"/>')
+      .replace(/<a:font script="Hang" typeface="[^"]*"\/>/g,'<a:font script="Hang" typeface="Noto Sans KR"/>');
+  }
+  function patchPictureFrames(xml){
+    return xml.replace(/<p:pic>[\s\S]*?<\/p:pic>/g,function(pic){
+      var marker=pic.match(/name="DPC_FRAME_([0-9]+)_([^"]*)"/);
+      if(!marker) return pic;
+      var lineWidth=Math.max(1,parseInt(marker[1],10)||1);
+      pic=pic.replace(marker[0],'name="'+marker[2]+'"');
+      return pic.replace('</p:spPr>','<a:ln w="'+lineWidth+'"><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:prstDash val="solid"/></a:ln></p:spPr>');
+    });
+  }
+  function patchTextDefaults(xml){
+    return xml.replace(/<p:sp>[\s\S]*?<\/p:sp>/g,function(shape){
+      var marker=shape.match(/name="DPC_TEXT_([^"]*)"/);
+      if(!marker) return shape;
+      shape=shape.replace(marker[0],'name="'+marker[1]+'"').replace(/lang="en-US"/g,'lang="ko-KR"');
+      shape=shape.replace(/<a:endParaRPr([^>]*)\/>/g,function(_all,attrs){
+        attrs=attrs.replace(/\s+lang="[^"]*"/g,'')+' lang="ko-KR"';
+        return '<a:endParaRPr'+attrs+'><a:latin typeface="Noto Sans KR"/><a:ea typeface="Noto Sans KR"/><a:cs typeface="Noto Sans KR"/></a:endParaRPr>';
+      });
+      return shape;
+    });
+  }
+  async function normalizePptx(blob,JSZip){
+    var zip=await JSZip.loadAsync(blob);
+    var tasks=[];
+    zip.forEach(function(path,entry){
+      if(/^ppt\/slides\/slide\d+\.xml$/.test(path)){
+        tasks.push(entry.async('string').then(function(xml){zip.file(path,patchTextDefaults(patchPictureFrames(xml)));}));
+      }else if(path==='ppt/theme/theme1.xml'){
+        tasks.push(entry.async('string').then(function(xml){zip.file(path,xmlFontDefaults(xml));}));
+      }
+    });
+    await Promise.all(tasks);
+    return zip.generateAsync({type:'blob',compression:'STORE',mimeType:'application/vnd.openxmlformats-officedocument.presentationml.presentation'});
+  }
+  function pageRecords(){
+    var pages=E('pages'); if(!pages) return [];
+    return Array.prototype.map.call(pages.querySelectorAll('.page'),function(page){return page.__dpcPptPage;}).filter(Boolean);
+  }
+  function downloadBlob(blob,name){
+    var url=URL.createObjectURL(blob), a=document.createElement('a');
+    a.href=url; a.download=name; a.style.display='none'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){URL.revokeObjectURL(url);},30000);
+  }
+  function rectInches(rect,sx,sy,scale){
+    return {x:sx+rect.x*scale,y:sy+rect.y*scale,w:Math.max(.001,rect.w*scale),h:Math.max(.001,rect.h*scale)};
+  }
+  async function exportPptx(){
+    var records=pageRecords();
+    if(!records.length){alert('SHEET를 먼저 생성해 주세요.');return;}
+    var firstRatio=records[0].width/records[0].height;
+    var mixed=records.some(function(p){return Math.abs((p.width/p.height)-firstRatio)/firstRatio>0.003;});
+    if(mixed){
+      alert('PPTX는 모든 슬라이드가 같은 비율이어야 합니다. 현재 생성된 페이지의 시트 비율을 통일한 뒤 다시 생성해 주세요.');
+      return;
+    }
+    var btn=E('savePptx');
+    if(btn&&btn.__dpcWorking) return;
+    try{
+      if(btn){btn.__dpcWorking=true;btn.classList.add('is-working');btn.disabled=true;btn.textContent='PPTX 생성 중...';}
+      var modules=await Promise.all([ensurePptxGen(),ensureJsZip()]);
+      var PptxGenJS=modules[0], JSZip=modules[1];
+      var pptx=new PptxGenJS();
+      /* 16:9 기준 67.73 × 38.10 cm. 기존 33.87 × 19.05 cm 출력의 정확히 두 배이며,
+         렌더러의 동일 좌표를 scale 하나로 확대하므로 이미지·간격·텍스트 비율은 변하지 않는다. */
+      var longSide=26.6666667, slideW, slideH;
+      var pptFontSize=24;
+      if(firstRatio>=1){slideW=longSide;slideH=longSide/firstRatio;}
+      else{slideH=longSide;slideW=longSide*firstRatio;}
+      pptx.defineLayout({name:'DPC_SHEET',width:slideW,height:slideH});
+      pptx.layout='DPC_SHEET';
+      pptx.author='김정태 | Storyboard Artist';
+      pptx.company='DPCONTI';
+      pptx.subject='Editable storyboard sheet';
+      pptx.title=fileStem();
+      pptx.lang='ko-KR';
+      pptx.theme={headFontFace:'Noto Sans KR',bodyFontFace:'Noto Sans KR',lang:'ko-KR'};
+      for(var pi=0;pi<records.length;pi++){
+        var rec=records[pi], slide=pptx.addSlide();
+        var bg=String(rec.background||'#ffffff');
+        if(bg!=='transparent') slide.background={color:cleanColor(bg,'FFFFFF')};
+        var scale=Math.min(slideW/rec.width,slideH/rec.height);
+        var sx=(slideW-rec.width*scale)/2, sy=(slideH-rec.height*scale)/2;
+        for(var ii=0;ii<rec.placements.length;ii++){
+          var placement=rec.placements[ii], item=placement.item||{};
+          var itemName=String(item.file&&item.file.name||('CUT_'+String(ii+1).padStart(3,'0')));
+          var ir=rectInches(placement.image,sx,sy,scale);
+          var data=await itemImageData(item);
+          var imageObjectName='CUT '+String(ii+1).padStart(3,'0');
+          if(placement.frame){
+            var fr=rectInches(placement.frame,sx,sy,scale);
+            var visibleFrame=Math.max(0,(fr.w-ir.w)/2,(fr.h-ir.h)/2);
+            /* visibleFrame은 이미 캔버스에서 한쪽에 보이는 실제 프레임 두께다.
+               PPT 선 폭으로 변환할 때 다시 두 배로 만들지 않는다. */
+            var lineEmu=Math.max(1,Math.round(visibleFrame*914400));
+            imageObjectName='DPC_FRAME_'+lineEmu+'_'+imageObjectName;
+          }
+          slide.addImage({data:data,x:ir.x,y:ir.y,w:ir.w,h:ir.h,altText:itemName,objectName:imageObjectName});
+          if(placement.text){
+            var tr=rectInches(placement.text,sx,sy,scale);
+            var textName='TEXT '+String(ii+1).padStart(3,'0');
+            var textColor=textColorForBackground(bg);
+            var textRuns;
+            if(placement.number&&placement.number.mode==='outside'){
+              var outsidePx=Number(placement.number.fontPx)||0;
+              var outsideFontSize=outsidePx>0?Math.max(8,outsidePx*scale*72):pptFontSize;
+              textRuns=[
+                {text:placement.number.label,options:{fontFace:'Noto Sans KR',fontSize:outsideFontSize,color:textColor,lang:'ko-KR',bold:true,breakLine:true}},
+                {text:'\u200B',options:{fontFace:'Noto Sans KR',fontSize:pptFontSize,color:textColor,lang:'ko-KR'}}
+              ];
+            }else{
+              textRuns=[{text:'\u200B',options:{fontFace:'Noto Sans KR',fontSize:pptFontSize,color:textColor,lang:'ko-KR'}}];
+            }
+            var outsideLeft=(placement.number&&placement.number.mode==='outside')?Math.max(0,(Number(placement.number.padX)||0)*scale):0;
+            var outsideTop=(placement.number&&placement.number.mode==='outside')?Math.max(0,(Number(placement.number.padTop)||0)*scale):0;
+            slide.addText(textRuns,{x:tr.x,y:tr.y,w:tr.w,h:tr.h,margin:[outsideLeft,0,0,outsideTop],fontFace:'Noto Sans KR',fontSize:pptFontSize,color:textColor,lang:'ko-KR',valign:'top',breakLine:false,fill:{color:'FFFFFF',transparency:100},line:{color:'FFFFFF',transparency:100},altText:'TEXT '+itemName,objectName:'DPC_TEXT_'+textName});
+          }
+          if(placement.number&&placement.number.mode==='inside'){
+            var nr=rectInches(placement.number,sx,sy,scale);
+            var numberName='NUMBER '+String(ii+1).padStart(3,'0');
+            var insidePx=Number(placement.number.fontPx)||0;
+            var insideFontSize=insidePx>0?Math.max(8,insidePx*scale*72):16;
+            var insidePad=Math.max(0,(Number(placement.number.padX)||0)*scale);
+            var insidePadY=Math.max(0,(Number(placement.number.padY)||0)*scale);
+            slide.addText([{text:placement.number.label,options:{fontFace:'Noto Sans KR',fontSize:insideFontSize,color:'FFFFFF',lang:'ko-KR',bold:true}}],{x:nr.x,y:nr.y,w:nr.w,h:nr.h,margin:[insidePad,insidePad,insidePadY,insidePadY],fontFace:'Noto Sans KR',fontSize:insideFontSize,bold:true,color:'FFFFFF',lang:'ko-KR',valign:'mid',breakLine:false,fill:{color:'000000',transparency:45},line:{color:'000000',transparency:100},altText:'NUMBER '+itemName,objectName:'DPC_TEXT_'+numberName});
+          }
+        }
+      }
+      var out=await pptx.write({outputType:'blob',compression:false});
+      if(!(out instanceof Blob)) out=new Blob([out],{type:'application/vnd.openxmlformats-officedocument.presentationml.presentation'});
+      out=await normalizePptx(out,JSZip);
+      downloadBlob(out,fileStem()+'.pptx');
+      try{if(typeof window.gtag==='function') window.gtag('event','sheet_save_pptx',{tool_name:'frame_sheet',page_count:records.length});}catch(_e){}
+    }catch(err){
+      console.error(err);
+      alert('PPTX 저장에 실패했습니다. '+(err&&err.message?err.message:''));
+    }finally{
+      if(btn){btn.__dpcWorking=false;btn.classList.remove('is-working');btn.disabled=false;btn.textContent='PPTX 저장';}
+    }
+  }
+  ready(function(){var btn=E('savePptx');if(btn&&!btn.__dpcPptxBound){btn.addEventListener('click',exportPptx);btn.__dpcPptxBound=true;}});
 })();
 </script>
 </body>
