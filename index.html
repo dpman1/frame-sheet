@@ -12598,6 +12598,14 @@ body.__sheet_processing #make.sheetBtn:focus{
     return out || ui.opt;
   }
   function pageSize(opt){ var scale=1200/Math.max(opt.rw,opt.rh); return [Math.round(opt.rw*scale),Math.round(opt.rh*scale)]; }
+  /* PPT 표준 좌표계는 짧은 축 7.5in을 기준으로 한다.
+     이미지 픽셀 해상도와 슬라이드의 물리 크기를 분리해 모든 비율에 같은 원칙을 적용한다. */
+  function standardSlideSizeForRatio(ratio){
+    ratio=Math.max(.0001,Number(ratio)||16/9);
+    var shortSide=7.5;
+    return ratio>=1 ? {w:shortSide*ratio,h:shortSide} : {w:shortSide,h:shortSide/ratio};
+  }
+  window.dpcStandardSlideSizeForRatio=standardSlideSizeForRatio;
   function bgFill(ctx,W,H){ var bg=gv('bgColor','#ffffff'); if(bg!=='transparent'){ ctx.fillStyle=bg; ctx.fillRect(0,0,W,H); } }
   function canvasGuardScale(w,h){
     var textOn=!!(E('textMarginOn')&&E('textMarginOn').checked);
@@ -12693,14 +12701,14 @@ body.__sheet_processing #make.sheetBtn:focus{
     function applyVisibleSelection(rec){
       var out;
       if(forceVisible){
-        /* 첫 생성은 시트·규격·방향은 클릭 순간 값을 사용하되, 외곽·간격은
-           사용자가 직접 편집하지 않았다면 기존 20컷 추천값을 사용한다. */
+        /* 첫 생성도 SHEET 클릭 순간 화면에 표시된 값을 그대로 사용한다.
+           빈 프레임 생성 과정의 추천값이 외곽·간격을 다시 바꾸면 같은 UI 상태가
+           입력 유무에 따라 다른 결과를 내므로, 표시값을 단일 권한으로 삼는다. */
         out=Object.assign({},rec||manualOpt);
         out.c=manualOpt.c; out.r=manualOpt.r;
         out.rw=manualOpt.rw; out.rh=manualOpt.rh; out.flow=manualOpt.flow;
         out.fit=manualOpt.fit; out.cutSize=manualOpt.cutSize;
-        if(marginEdited) out.mg=manualOpt.mg;
-        if(gapEdited) out.gp=manualOpt.gp;
+        out.mg=manualOpt.mg; out.gp=manualOpt.gp;
       }else out=Object.assign({},manualOpt);
       out.__visibleLayoutAuthority=true;
       return out;
@@ -12708,6 +12716,8 @@ body.__sheet_processing #make.sheetBtn:focus{
     function applyLocks(rec){
       var out=Object.assign({},rec||manualOpt);
       if(flowEdited) out.flow=manualOpt.flow;
+      /* 외곽·간격은 비율 그룹별 추천 항목이 아니라 현재 시트 전체의 공통 설정이다. */
+      out.mg=manualOpt.mg; out.gp=manualOpt.gp;
       if(layoutLocked){
         out.c=manualOpt.c; out.r=manualOpt.r; out.flow=manualOpt.flow;
         out.mg=manualOpt.mg; out.gp=manualOpt.gp; out.fit=manualOpt.fit; out.cutSize=manualOpt.cutSize;
@@ -12747,14 +12757,99 @@ body.__sheet_processing #make.sheetBtn:focus{
     return out;
   }
   var dpcRenderTarget=null;
-  async function drawPage(list,opt,pageNo,numberStart,globalReferenceItem){
+  function textCompositeDimensions(enabled,side,rate,fs,ar,imageW,imageH){
+    imageW=Math.max(1,Number(imageW)||1); imageH=Math.max(1,Number(imageH)||1);
+    if(!enabled) return {w:imageW,h:imageH,imageW:imageW,imageH:imageH,side:'none',band:0,separator:0};
+    rate=Math.max(1,Number(rate)||1);
+    var separator=fs>0?fs:0;
+    var band=side==='right'?imageW*rate:imageH*rate;
+    return side==='right'
+      ? {w:imageW+band,h:imageH,imageW:imageW,imageH:imageH,side:side,band:band,separator:separator}
+      : {w:imageW,h:imageH+band,imageW:imageW,imageH:imageH,side:side,band:band,separator:separator};
+  }
+  async function sharedPixelPlanForPages(pageLists,opt,globalReferenceItem){
+    if(!pageLists.length || opt.fit!=='pixel') return null;
+    /* 잔여 외곽 크롭은 마지막 페이지의 규격 자체를 바꾸는 명시적 옵션이다.
+       전체 규격을 유지하는 일반 경로만 공통 페이지 계획을 공유한다. */
+    var rule=document.querySelector('input[name="dpcMarginRule"]:checked');
+    var crop=E('dpcCropResidualOuter');
+    if(crop && crop.checked && !crop.disabled && rule && rule.value==='gap') return null;
+    var cols=Math.max(1,opt.c), rows=Math.max(1,opt.r);
+    var fs=(E('frameOn')&&E('frameOn').checked)?int0(gv('frameSize',6),6):0;
+    var textEnabled=!!(E('textMarginOn')&&E('textMarginOn').checked);
+    var side=opt.flow==='horizontal'?'bottom':'right';
+    var outerRaw=String(opt.mg==null?'':opt.mg).trim();
+    var margin=outerRaw===''?(fs>0?-fs:0):(Number(opt.mg)||0);
+    var gap=effectiveGap(opt.gp,fs);
+    var wh=pageSize(opt), targetRatio=wh[0]/wh[1];
+    var refItem=globalReferenceItem||pageLists[0][0];
+    await ensureDim(refItem);
+    var cutMode=gv('cutSizeMode','auto')||'auto';
+    if(cutMode==='auto') cutMode=opt.flow==='horizontal'?'height':'width';
+    var refH=Math.max(1,Number(refItem&&refItem.height)||540);
+    var refW=Math.max(1,Number(refItem&&refItem.width)||Math.round(refH*rawRatio(refItem))||960);
+    var pageBoxes=[];
+    for(var pi=0;pi<pageLists.length;pi++){
+      var list=pageLists[pi], boxes=[];
+      for(var ii=0;ii<list.length;ii++){
+        await ensureDim(list[ii]);
+        var ar=Math.max(.0001,rawRatio(list[ii])), imageW, imageH;
+        if(cutMode==='width'){ imageW=refW; imageH=Math.max(1,refW/ar); }
+        else{ imageW=Math.max(1,refH*ar); imageH=refH; }
+        boxes.push({ar:ar,imageW:imageW,imageH:imageH});
+      }
+      pageBoxes.push(boxes);
+    }
+    var baseRaw=(pageBoxes[0]&&pageBoxes[0][0])||{ar:refW/refH,imageW:refW,imageH:refH};
+    function pos(i){
+      return opt.flow==='horizontal'
+        ? {col:i%cols,row:Math.floor(i/cols)}
+        : {row:i%rows,col:Math.floor(i/rows)};
+    }
+    function atRate(rate){
+      var base=textCompositeDimensions(textEnabled,side,rate,fs,baseRaw.ar,baseRaw.imageW,baseRaw.imageH);
+      var widths=new Array(cols).fill(Math.max(1,base.w));
+      var heights=new Array(rows).fill(Math.max(1,base.h));
+      for(var p=0;p<pageBoxes.length;p++){
+        for(var i=0;i<pageBoxes[p].length;i++){
+          var b=pageBoxes[p][i], c=textCompositeDimensions(textEnabled,side,rate,fs,b.ar,b.imageW,b.imageH), at=pos(i);
+          if(at.col>=cols||at.row>=rows) continue;
+          widths[at.col]=Math.max(widths[at.col],c.w);
+          heights[at.row]=Math.max(heights[at.row],c.h);
+        }
+      }
+      var naturalW=widths.reduce(function(a,b){return a+b;},0)+cols*fs*2+(cols-1)*gap+margin*2;
+      var naturalH=heights.reduce(function(a,b){return a+b;},0)+rows*fs*2+(rows-1)*gap+margin*2;
+      return {rate:rate,colW:widths,rowH:heights,ratio:naturalW/naturalH};
+    }
+    var grid=atRate(1);
+    if(textEnabled){
+      var canUseMore=(side==='right'&&grid.ratio<targetRatio)||(side==='bottom'&&grid.ratio>targetRatio);
+      if(canUseMore){
+        var low=1, high=20, highGrid=atRate(high);
+        var reaches=(side==='right'&&highGrid.ratio>=targetRatio)||(side==='bottom'&&highGrid.ratio<=targetRatio);
+        if(reaches){
+          for(var bs=0;bs<48;bs++){
+            var mid=(low+high)/2, midGrid=atRate(mid);
+            if(side==='right'){ if(midGrid.ratio<targetRatio) low=mid; else high=mid; }
+            else{ if(midGrid.ratio>targetRatio) low=mid; else high=mid; }
+          }
+          grid=atRate((low+high)/2);
+        }else grid=highGrid;
+      }
+    }
+    return {cols:cols,rows:rows,rate:grid.rate,colW:grid.colW,rowH:grid.rowH};
+  }
+  async function drawPage(list,opt,pageNo,numberStart,globalReferenceItem,sharedPixelPlan){
     var cols=Math.max(1,opt.c), rows=Math.max(1,opt.r);
     var max=0; list.forEach(function(it){ max=Math.max(max,normRatio(it)); });
     // 규격 고정 상태가 아닐 때만 기존 초와이드 보호 규칙을 적용한다.
     if(!opt.__lockedLayout && !opt.__visibleLayoutAuthority && sameBucketPage(list) && max>4){ if(max>=14) cols=1; else if(cols>2) cols=2; rows=Math.max(rows,Math.ceil(list.length/cols)); }
 
     var wh=pageSize(opt), W=wh[0], H=wh[1], targetRatio=W/H;
-    var outerRaw=String(gv('margin','')).trim();
+    /* 빈칸 여부와 숫자값 모두 이 페이지에 확정된 opt에서 읽는다.
+       전역 DOM과 그룹 옵션을 섞으면 빈 프레임/실제 이미지 경로가 달라질 수 있다. */
+    var outerRaw=String(opt.mg==null?'':opt.mg).trim();
     var outerIsBlank=outerRaw==='';
     var fs=(E('frameOn')&&E('frameOn').checked)?int0(gv('frameSize',6),6):0;
     var textMarginEnabled=!!(E('textMarginOn')&&E('textMarginOn').checked);
@@ -12765,16 +12860,8 @@ body.__sheet_processing #make.sheetBtn:focus{
     numberStart=Math.max(1,parseInt(numberStart,10)||1);
     var textMarginRate=1;
     function textCompositeForImage(ar,imageW,imageH){
-      imageW=Math.max(1,Number(imageW)||1); imageH=Math.max(1,Number(imageH)||1);
-      if(!textMarginEnabled) return {w:imageW,h:imageH,imageW:imageW,imageH:imageH,side:'none',band:0,separator:0};
-      /* 텍스트 여백의 방향은 개별 컷 비율이 아니라 사용자가 선택한 배치가 결정한다.
-         세로 배치: 컷 오른쪽 / 가로 배치: 컷 아래 */
       var side=opt.flow==='horizontal'?'bottom':'right';
-      var separator=fs>0?fs:0;
-      var band=side==='right'?imageW*textMarginRate:imageH*textMarginRate;
-      return side==='right'
-        ? {w:imageW+band,h:imageH,imageW:imageW,imageH:imageH,side:side,band:band,separator:separator}
-        : {w:imageW,h:imageH+band,imageW:imageW,imageH:imageH,side:side,band:band,separator:separator};
+      return textCompositeDimensions(textMarginEnabled,side,textMarginRate,fs,ar,imageW,imageH);
     }
     function fitTextComposite(ar,maxW,maxH){
       ar=Math.max(0.0001,Number(ar)||1); maxW=Math.max(1,maxW); maxH=Math.max(1,maxH);
@@ -12922,8 +13009,18 @@ body.__sheet_processing #make.sheetBtn:focus{
         var naturalH=sum(heights)+layoutRows*fs*2+(layoutRows-1)*gap+margin*2;
         return {rate:textMarginRate,boxes:boxes,colW:widths,rowH:heights,ratio:naturalW/naturalH};
       }
-      var grid=gridAtRate(1);
-      if(textMarginEnabled){
+      var grid;
+      var usingSharedPlan=!!(sharedPixelPlan && sharedPixelPlan.cols===layoutCols && sharedPixelPlan.rows===layoutRows);
+      if(usingSharedPlan){
+        textMarginRate=Math.max(1,Number(sharedPixelPlan.rate)||1);
+        grid={
+          rate:textMarginRate,
+          boxes:rawImageBoxes.map(function(b){return textCompositeForImage(b.ar,b.imageW,b.imageH);}),
+          colW:sharedPixelPlan.colW.slice(),
+          rowH:sharedPixelPlan.rowH.slice()
+        };
+      }else grid=gridAtRate(1);
+      if(textMarginEnabled && !usingSharedPlan){
         var side=opt.flow==='horizontal'?'bottom':'right';
         var canUseMore=(side==='right' && grid.ratio<targetRatio) || (side==='bottom' && grid.ratio>targetRatio);
         if(canUseMore){
@@ -12975,10 +13072,11 @@ body.__sheet_processing #make.sheetBtn:focus{
       return (r*.299+g*.587+b*.114)<150?'#ffffff':'#000000';
     }
     function drawCutNumber(label,mode,rect){
-      var frameH=Math.max(1,Number(rect.frameH)||Number(rect.h)||1);
-      var fontPx=mode==='inside'
-        ? Math.max(8,Math.round(frameH*.10))
-        : Math.max(9,Math.round(frameH*.115));
+      /* 웹 시트와 PPTX가 같은 상대 크기로 보이도록 표준 슬라이드의 8pt를
+         현재 캔버스 좌표로 역산한다. 컷 수나 개별 프레임 높이는 글자 크기를 바꾸지 않는다. */
+      var slideSize=standardSlideSizeForRatio(cv.width/cv.height);
+      var inchPerPx=Math.min(slideSize.w/cv.width,slideSize.h/cv.height);
+      var fontPx=Math.max(1,Math.round(8/(Math.max(.000001,inchPerPx)*72)));
       ctx.save();
       ctx.font='700 '+fontPx+'px "Noto Sans KR", Arial, sans-serif';
       ctx.textBaseline='alphabetic';
@@ -13006,7 +13104,7 @@ body.__sheet_processing #make.sheetBtn:focus{
       }
       /* 바깥쪽 번호는 프레임과 정렬축은 유지하되, 맞닿는 축에만
          한 줄 간격보다 작은 공통 여유를 둔다. */
-      var edgeGap=Math.max(2,Math.round(fontPx*.18));
+      var edgeGap=Math.max(2,Math.round(fontPx*.25));
       var padLeft=rect.side==='right'?edgeGap:0;
       var padTop=rect.side==='bottom'?edgeGap:0;
       ctx.fillStyle=canvasTextColor();
@@ -13155,7 +13253,9 @@ body.__sheet_processing #make.sheetBtn:focus{
       var pptNumberRect=null;
       if(cutNumberEnabled){
         var numberText=String(numberStart+i);
-        if(cutNumberPosition==='outside'&&pptTextRect) pptNumberRect=drawCutNumber('#'+numberText,'outside',pptTextRect);
+        /* NBSP는 PPTX가 번호 끝의 공백을 제거하지 못하게 한다.
+           사용자는 같은 줄에서 별도 스페이스 없이 바로 지문을 입력할 수 있다. */
+        if(cutNumberPosition==='outside'&&pptTextRect) pptNumberRect=drawCutNumber('#'+numberText+'\u00A0','outside',pptTextRect);
         else pptNumberRect=drawCutNumber(numberText,'inside',{x:drawX,y:drawY,w:drawW,h:drawH});
       }
       noteContentBounds(drawX,drawY,textMarginEnabled?drawW:compContentW,textMarginEnabled?drawH:compContentH);
@@ -13345,10 +13445,15 @@ body.__sheet_processing #make.sheetBtn:focus{
       for(var gi=0;gi<gs.length;gi++){
         var g=gs[gi], opt=g.opt||readOpt();
         var per=Math.max(1,(Math.max(1,opt.c||1)*Math.max(1,opt.r||1)));
-        for(var s=0;s<g.list.length;s+=per){
-          var pageList=g.list.slice(s,s+per);
+        var pageLists=[];
+        for(var ps=0;ps<g.list.length;ps+=per) pageLists.push(g.list.slice(ps,ps+per));
+        /* 같은 규격 그룹의 모든 페이지를 먼저 측정하고 열·행 크기를 한 번만 확정한다.
+           실제 컷 비율이나 페이지별 캔버스 가드 때문에 후반 페이지가 작아지지 않는다. */
+        var sharedPlan=await sharedPixelPlanForPages(pageLists,opt,globalReferenceItem);
+        for(var pg=0;pg<pageLists.length;pg++){
+          var pageList=pageLists[pg];
           total++;
-          await drawPage(pageList,opt,pageNo++,globalCutNo,globalReferenceItem);
+          await drawPage(pageList,opt,pageNo++,globalCutNo,globalReferenceItem,sharedPlan);
           globalCutNo+=pageList.length;
         }
       }
@@ -15154,10 +15259,11 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
     }).catch(function(err){window.__dpcJsZipPromise=null;throw err;});
     return window.__dpcJsZipPromise;
   }
+  var PPT_FONT_FACE='Malgun Gothic';
   function xmlFontDefaults(xml){
     return xml
-      .replace(/<a:ea typeface="[^"]*"\/>/g,'<a:ea typeface="Noto Sans KR"/>')
-      .replace(/<a:font script="Hang" typeface="[^"]*"\/>/g,'<a:font script="Hang" typeface="Noto Sans KR"/>');
+      .replace(/<a:ea typeface="[^"]*"\/>/g,'<a:ea typeface="'+PPT_FONT_FACE+'"/>')
+      .replace(/<a:font script="Hang" typeface="[^"]*"\/>/g,'<a:font script="Hang" typeface="'+PPT_FONT_FACE+'"/>');
   }
   function patchPictureFrames(xml){
     return xml.replace(/<p:pic>[\s\S]*?<\/p:pic>/g,function(pic){
@@ -15175,7 +15281,7 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
       shape=shape.replace(marker[0],'name="'+marker[1]+'"').replace(/lang="en-US"/g,'lang="ko-KR"');
       shape=shape.replace(/<a:endParaRPr([^>]*)\/>/g,function(_all,attrs){
         attrs=attrs.replace(/\s+lang="[^"]*"/g,'')+' lang="ko-KR"';
-        return '<a:endParaRPr'+attrs+'><a:latin typeface="Noto Sans KR"/><a:ea typeface="Noto Sans KR"/><a:cs typeface="Noto Sans KR"/></a:endParaRPr>';
+        return '<a:endParaRPr'+attrs+'><a:latin typeface="'+PPT_FONT_FACE+'"/><a:ea typeface="'+PPT_FONT_FACE+'"/><a:cs typeface="'+PPT_FONT_FACE+'"/></a:endParaRPr>';
       });
       return shape;
     });
@@ -15221,12 +15327,13 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
       var modules=await Promise.all([ensurePptxGen(),ensureJsZip()]);
       var PptxGenJS=modules[0], JSZip=modules[1];
       var pptx=new PptxGenJS();
-      /* 16:9 기준 67.73 × 38.10 cm. 기존 33.87 × 19.05 cm 출력의 정확히 두 배이며,
-         렌더러의 동일 좌표를 scale 하나로 확대하므로 이미지·간격·텍스트 비율은 변하지 않는다. */
-      var longSide=26.6666667, slideW, slideH;
-      var pptFontSize=24;
-      if(firstRatio>=1){slideW=longSide;slideH=longSide/firstRatio;}
-      else{slideH=longSide;slideW=longSide*firstRatio;}
+      /* 16:9 기준 33.87 × 19.05 cm의 표준 1배 크기다.
+         컷 수와 원본 픽셀 해상도는 슬라이드 물리 크기를 바꾸지 않는다. */
+      var standardSize=(typeof window.dpcStandardSlideSizeForRatio==='function')
+        ? window.dpcStandardSlideSizeForRatio(firstRatio)
+        : (firstRatio>=1?{w:7.5*firstRatio,h:7.5}:{w:7.5,h:7.5/firstRatio});
+      var slideW=standardSize.w, slideH=standardSize.h;
+      var pptFontSize=8;
       pptx.defineLayout({name:'DPC_SHEET',width:slideW,height:slideH});
       pptx.layout='DPC_SHEET';
       pptx.author='김정태 | Storyboard Artist';
@@ -15234,7 +15341,7 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
       pptx.subject='Editable storyboard sheet';
       pptx.title=fileStem();
       pptx.lang='ko-KR';
-      pptx.theme={headFontFace:'Noto Sans KR',bodyFontFace:'Noto Sans KR',lang:'ko-KR'};
+      pptx.theme={headFontFace:PPT_FONT_FACE,bodyFontFace:PPT_FONT_FACE,lang:'ko-KR'};
       for(var pi=0;pi<records.length;pi++){
         var rec=records[pi], slide=pptx.addSlide();
         var bg=String(rec.background||'#ffffff');
@@ -15261,28 +15368,34 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
             var textName='TEXT '+String(ii+1).padStart(3,'0');
             var textColor=textColorForBackground(bg);
             var textRuns;
+            var textEntryFontSize=pptFontSize;
             if(placement.number&&placement.number.mode==='outside'){
-              var outsidePx=Number(placement.number.fontPx)||0;
-              var outsideFontSize=outsidePx>0?Math.max(8,outsidePx*scale*72):pptFontSize;
+              var outsideFontSize=8;
+              textEntryFontSize=8;
               textRuns=[
-                {text:placement.number.label,options:{fontFace:'Noto Sans KR',fontSize:outsideFontSize,color:textColor,lang:'ko-KR',bold:true,breakLine:true}},
-                {text:'\u200B',options:{fontFace:'Noto Sans KR',fontSize:pptFontSize,color:textColor,lang:'ko-KR'}}
+                /* 번호 문자열 끝의 NBSP 뒤에 입력점이 같은 줄로 이어진다. */
+                {text:placement.number.label,options:{fontFace:PPT_FONT_FACE,fontSize:outsideFontSize,color:textColor,lang:'ko-KR',bold:true}},
+                {text:'\u200B',options:{fontFace:PPT_FONT_FACE,fontSize:textEntryFontSize,color:textColor,lang:'ko-KR',bold:true}}
               ];
             }else{
-              textRuns=[{text:'\u200B',options:{fontFace:'Noto Sans KR',fontSize:pptFontSize,color:textColor,lang:'ko-KR'}}];
+              textRuns=[{text:'\u200B',options:{fontFace:PPT_FONT_FACE,fontSize:pptFontSize,color:textColor,lang:'ko-KR',bold:true}}];
             }
-            var outsideLeft=(placement.number&&placement.number.mode==='outside')?Math.max(0,(Number(placement.number.padX)||0)*scale):0;
-            var outsideTop=(placement.number&&placement.number.mode==='outside')?Math.max(0,(Number(placement.number.padTop)||0)*scale):0;
-            slide.addText(textRuns,{x:tr.x,y:tr.y,w:tr.w,h:tr.h,margin:[outsideLeft,0,0,outsideTop],fontFace:'Noto Sans KR',fontSize:pptFontSize,color:textColor,lang:'ko-KR',valign:'top',breakLine:false,fill:{color:'FFFFFF',transparency:100},line:{color:'FFFFFF',transparency:100},altText:'TEXT '+itemName,objectName:'DPC_TEXT_'+textName});
+            /* PptxGenJS 일반 텍스트 margin 배열은 [좌, 우, 하, 상] pt 단위다.
+               캔버스 좌표를 inch로 바꾼 뒤 72를 곱해 pt로 통일한다. */
+            var outsideLeftPt=(placement.number&&placement.number.mode==='outside')?Math.max(0,(Number(placement.number.padX)||0)*scale*72):0;
+            var outsideTopPt=(placement.number&&placement.number.mode==='outside')?Math.max(0,(Number(placement.number.padTop)||0)*scale*72):0;
+            /* 실제 텍스트 도형은 한 줄 높이로 시작하고 입력량에 따라 아래로 확장한다.
+               예약된 텍스트 영역의 가로 폭과 시작점은 그대로 유지한다. */
+            var oneLineHeight=Math.max(.001,Math.min(tr.h,(outsideTopPt+textEntryFontSize*1.25+1)/72));
+            slide.addText(textRuns,{x:tr.x,y:tr.y,w:tr.w,h:oneLineHeight,margin:[outsideLeftPt,0,0,outsideTopPt],fontFace:PPT_FONT_FACE,fontSize:textEntryFontSize,bold:true,color:textColor,lang:'ko-KR',valign:'top',breakLine:false,fit:'resize',fill:{color:'FFFFFF',transparency:100},line:{color:'FFFFFF',transparency:100},altText:'TEXT '+itemName,objectName:'DPC_TEXT_'+textName});
           }
           if(placement.number&&placement.number.mode==='inside'){
             var nr=rectInches(placement.number,sx,sy,scale);
             var numberName='NUMBER '+String(ii+1).padStart(3,'0');
-            var insidePx=Number(placement.number.fontPx)||0;
-            var insideFontSize=insidePx>0?Math.max(8,insidePx*scale*72):16;
-            var insidePad=Math.max(0,(Number(placement.number.padX)||0)*scale);
-            var insidePadY=Math.max(0,(Number(placement.number.padY)||0)*scale);
-            slide.addText([{text:placement.number.label,options:{fontFace:'Noto Sans KR',fontSize:insideFontSize,color:'FFFFFF',lang:'ko-KR',bold:true}}],{x:nr.x,y:nr.y,w:nr.w,h:nr.h,margin:[insidePad,insidePad,insidePadY,insidePadY],fontFace:'Noto Sans KR',fontSize:insideFontSize,bold:true,color:'FFFFFF',lang:'ko-KR',valign:'mid',breakLine:false,fill:{color:'000000',transparency:45},line:{color:'000000',transparency:100},altText:'NUMBER '+itemName,objectName:'DPC_TEXT_'+numberName});
+            var insideFontSize=8;
+            var insidePadXPt=Math.max(0,(Number(placement.number.padX)||0)*scale*72);
+            var insidePadYPt=Math.max(0,(Number(placement.number.padY)||0)*scale*72);
+            slide.addText([{text:placement.number.label,options:{fontFace:PPT_FONT_FACE,fontSize:insideFontSize,color:'FFFFFF',lang:'ko-KR',bold:true}}],{x:nr.x,y:nr.y,w:nr.w,h:nr.h,margin:[insidePadXPt,insidePadXPt,insidePadYPt,insidePadYPt],fontFace:PPT_FONT_FACE,fontSize:insideFontSize,bold:true,color:'FFFFFF',lang:'ko-KR',valign:'mid',breakLine:false,fill:{color:'000000',transparency:45},line:{color:'000000',transparency:100},altText:'NUMBER '+itemName,objectName:'DPC_TEXT_'+numberName});
           }
         }
       }
