@@ -3419,7 +3419,11 @@ body.dpc-tools-open .dpc-tools-panel{display:block}
     <button id="pick">파일 선택</button>
     <button id="addBlank">프레임</button><span id="lastFrameRatioBadge" class="last-frame-ratio-badge">16:9</span>
   </div>
-  <button id="make" class="sheetBtn" disabled aria-busy="true">SHEET</button>
+  <div class="dpc-app-transfer-actions" aria-label="SHEET 실행 및 CUT 연동">
+    <button id="sheetToCutBtn" class="dpc-app-transfer-target" type="button" aria-label="현재 SHEET 결과를 CUT에 추가">CUT</button>
+    <span class="dpc-app-transfer-arrow" aria-hidden="true">←</span>
+    <button id="make" class="sheetBtn" disabled aria-busy="true">SHEET</button>
+  </div>
 </div>
 
 <div class="savebar">
@@ -3466,8 +3470,8 @@ body.dpc-tools-open .dpc-tools-panel{display:block}
     <div id="dpcAdvClean" class="adv-v35-box">
       <div class="adv-v35-row adv-v35-row-1 dpc-adv-row dpc-adv-row-1">
         <label class="adv-frame-label dpc-adv-check"><input type="checkbox" id="frameOn" checked> 프레임 두께</label><input id="frameSize" type="number" value="6" class="adv-inline-num">
-        <span class="adv-v35-title dpc-adv-title">간격</span><input id="frameGap" type="number" value="50" class="adv-num">
-        <span class="adv-v35-title dpc-adv-title">외곽</span><input id="margin" type="number" value="50" class="adv-num">
+        <span class="adv-v35-title dpc-adv-title">간격</span><input id="frameGap" type="number" value="100" class="adv-num">
+        <span class="adv-v35-title dpc-adv-title">외곽</span><input id="margin" type="number" value="100" class="adv-num">
       </div>
 
       <div class="adv-v35-row adv-v35-row-2">
@@ -3576,11 +3580,19 @@ function applyFrameSheetInitialState(){
   setFrameSheetChecked('lockLayout',false);
   setFrameSheetChecked('frameOn',true);
   setFrameSheetValue('frameSize','6');
-  setFrameSheetValue('frameGap','50');
-  setFrameSheetValue('margin','50');
+  setFrameSheetValue('frameGap','100');
+  setFrameSheetValue('margin','100');
   setFrameSheetValue('bgColor','#ffffff');
   setFrameSheetValue('cutSizeMode','auto');
+  setFrameSheetChecked('frameRatioMix',true);
+  setFrameSheetChecked('dpcMarginRuleOuter',true);
+  setFrameSheetChecked('dpcMarginRuleGap',false);
+  setFrameSheetChecked('dpcCropResidualOuter',false);
   setFrameSheetChecked('textMarginOn',false);
+  setFrameSheetChecked('cutNumberOn',false);
+  setFrameSheetChecked('cutNumberInside',true);
+  setFrameSheetChecked('cutNumberOutside',false);
+  setFrameSheetChecked('sortMode',false);
   if(typeof window.dpcSyncCutSizePicker==='function') window.dpcSyncCutSizePicker();
   setFrameSheetValue('prefix','');
   const fs=document.getElementById('frameSize');
@@ -3592,6 +3604,16 @@ function applyFrameSheetInitialState(){
   window.__sheetUserEditedGap=false;
   window.__fsCurrentUiDirty=false;
   window.__dpcTextMarginBaseLayout=null;
+  const advanced=document.getElementById('advancedOptions');
+  if(advanced) advanced.open=false;
+  const crop=document.getElementById('dpcCropResidualOuter');
+  if(crop) crop.disabled=true;
+  const numberInside=document.getElementById('cutNumberInside');
+  const numberOutside=document.getElementById('cutNumberOutside');
+  if(numberInside) numberInside.disabled=true;
+  if(numberOutside) numberOutside.disabled=true;
+  if(typeof window.dpcSyncMarginRuleControls==='function') window.dpcSyncMarginRuleControls();
+  if(typeof window.dpcSyncCutNumberControls==='function') window.dpcSyncCutNumberControls();
   syncFrameSheetOptionLabels();
 }
 function resetFrameSheetRuntimeToInitial(){
@@ -4231,6 +4253,7 @@ if(bgColor.value!=="transparent"){
   var pngCache=new WeakMap();
   var dataUrlCache=new WeakMap();
   var isKakao=/KAKAOTALK/i.test(navigator.userAgent||'');
+  var isRestrictedInApp=/(KAKAOTALK|FBAN|FBAV|FB_IAB|Instagram)/i.test(navigator.userAgent||'');
 
   function dataUrlBlob(dataUrl){
     var parts=String(dataUrl||'').split(',');
@@ -4287,7 +4310,7 @@ if(bgColor.value!=="transparent"){
     return ((input&&input.value)||'sheet').trim()||'sheet';
   }
   function canvases(){ return Array.prototype.slice.call(document.querySelectorAll('#pages canvas')); }
-  function download(blob,name){
+  function directDownload(blob,name){
     var url=URL.createObjectURL(blob);
     var a=document.createElement('a');
     a.href=url;
@@ -4297,6 +4320,40 @@ if(bgColor.value!=="transparent"){
     a.remove();
     setTimeout(function(){ URL.revokeObjectURL(url); },30000);
   }
+  async function shareFiles(blobs,names){
+    if(!navigator.share || typeof File==='undefined') return false;
+    var files=blobs.map(function(blob,index){ return new File([blob],names[index],{type:blob.type||'application/octet-stream'}); });
+    try{
+      if(navigator.canShare && !navigator.canShare({files:files})) return false;
+      await navigator.share({files:files,title:names.length===1?names[0]:'SHEET 저장'});
+      return true;
+    }catch(error){
+      if(error && error.name==='AbortError') return true;
+      console.warn('인앱 파일 공유 실패',error);
+      return false;
+    }
+  }
+  function openImageFallback(blob){
+    var url=URL.createObjectURL(blob);
+    var opened=null;
+    try{ opened=window.open(url,'_blank'); }catch(_error){}
+    if(!opened){ try{ window.location.href=url; }catch(_error){} }
+    setTimeout(function(){ URL.revokeObjectURL(url); },120000);
+  }
+  window.dpcSaveBlob=async function(blob,name){
+    if(isRestrictedInApp){
+      if(await shareFiles([blob],[name])) return true;
+      if(/^image\//i.test(blob.type||'')){
+        openImageFallback(blob);
+        alert('인앱 브라우저가 다운로드를 막아 이미지 원본을 열었습니다. 이미지를 길게 눌러 저장하거나 메뉴에서 Chrome으로 열어 주세요.');
+        return true;
+      }
+      alert('이 인앱 브라우저는 파일 저장을 지원하지 않습니다. 우측 상단 메뉴에서 Chrome으로 연 뒤 다시 저장해 주세요.');
+      return false;
+    }
+    directDownload(blob,name);
+    return true;
+  };
   function downloadUrl(url,name){
     var a=document.createElement('a');
     a.href=url;
@@ -4346,7 +4403,18 @@ if(bgColor.value!=="transparent"){
         downloadUrl(await window.getDpcSheetPngDataUrl(list[0]),base+'-001.png');
         return;
       }
-      blobs.forEach(function(blob,index){ download(blob,base+'-'+String(index+1).padStart(3,'0')+'.png'); });
+      var names=blobs.map(function(_blob,index){ return base+'-'+String(index+1).padStart(3,'0')+'.png'; });
+      if(isRestrictedInApp){
+        if(await shareFiles(blobs,names)) return;
+        if(blobs.length===1){ openImageFallback(blobs[0]); alert('인앱 브라우저가 다운로드를 막아 이미지 원본을 열었습니다. 이미지를 길게 눌러 저장하거나 메뉴에서 Chrome으로 열어 주세요.'); return; }
+        var inAppZip=new JSZip();
+        blobs.forEach(function(blob,index){ inAppZip.file(names[index],blob); });
+        var zipBlob=await inAppZip.generateAsync({type:'blob'});
+        if(await shareFiles([zipBlob],[base+'.zip'])) return;
+        alert('이 인앱 브라우저는 여러 파일 저장을 지원하지 않습니다. 우측 상단 메뉴에서 Chrome으로 연 뒤 다시 저장해 주세요.');
+        return;
+      }
+      blobs.forEach(function(blob,index){ directDownload(blob,names[index]); });
     });
   }
   function saveZip(event){
@@ -4359,7 +4427,7 @@ if(bgColor.value!=="transparent"){
       var base=prefix();
       var zip=new JSZip();
       blobs.forEach(function(blob,index){ zip.file(base+'-'+String(index+1).padStart(3,'0')+'.png',blob); });
-      download(await zip.generateAsync({type:'blob'}),base+'.zip');
+      await window.dpcSaveBlob(await zip.generateAsync({type:'blob'}),base+'.zip');
     });
   }
 
@@ -4390,7 +4458,7 @@ setTimeout(()=>{
  const fs=document.getElementById('frameSize');
  fs.value='6'; fs.disabled=false;
  const fg=document.getElementById('frameGap');
- fg.value='50';
+ fg.value='100';
  
 },0);
 </script>
@@ -4733,7 +4801,7 @@ preset.onchange=()=>{
 if(!frameSize.value) frameSize.value='6';
 frameSize.disabled=false;
 
-frameGap.value='50';
+frameGap.value='100';
 
 // 빈프레임 추가는 새 컷 구성 기준 자동 추천을 받아야 하므로
 // 메인 시트/규격 직접입력 플래그만 초기화한다.
@@ -5586,6 +5654,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 (function(){
   /* 초기 진입/초기화/리사이즈 모두 동일한 단일 계산 경로를 사용한다. */
   var introMobileViewportCap = null;
+  var introMobileStableHeight = null;
   var fitRaf1 = 0;
   var fitRaf2 = 0;
 
@@ -5596,7 +5665,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     var current=(window.visualViewport && Number(window.visualViewport.height)) || window.innerHeight || document.documentElement.clientHeight || 0;
     if(!isIntroMobileViewport()) return current;
     if(!(introMobileViewportCap>0)) introMobileViewportCap=current;
-    return Math.min(current,introMobileViewportCap);
+    return introMobileViewportCap;
   }
   function getItemsSafe(){
     try{ if(typeof items!=='undefined' && Array.isArray(items)) return items; }catch(e){}
@@ -5608,6 +5677,15 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(!card || !img || card.classList.contains('is-hidden')) return;
     /* Do not reveal using the temporary 1:1 fallback before the embedded image dimensions are ready. */
     if(!img.complete || !(img.naturalWidth>0) || !(img.naturalHeight>0)) return;
+
+    /* 모바일 브라우저의 주소창/툴바와 고급옵션 스크롤은 visualViewport만
+       계속 바꾼다. 같은 표시 세션에서는 첫 확정 높이를 유지해 썸네일이
+       열고 스크롤할 때마다 축소되지 않게 한다. */
+    if(isIntroMobileViewport() && introMobileStableHeight>0){
+      card.style.height=introMobileStableHeight+'px';
+      card.classList.add('is-layout-ready');
+      return;
+    }
 
     card.style.removeProperty('height');
 
@@ -5634,6 +5712,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     var target=Math.max(1,available);
     if(target>0){
       card.style.height=target+'px';
+      if(isIntroMobileViewport()) introMobileStableHeight=target;
       card.classList.add('is-layout-ready');
     }
   }
@@ -5651,11 +5730,11 @@ document.addEventListener('DOMContentLoaded',()=>{
 
   window.showFrameSheetIntroThumb=function(){
     var el=document.getElementById('introThumbCard');
-    if(el){ el.classList.remove('is-hidden'); el.classList.remove('is-layout-ready'); scheduleIntroFit(); }
+    if(el){ introMobileStableHeight=null; el.classList.remove('is-hidden'); el.classList.remove('is-layout-ready'); scheduleIntroFit(); }
   };
   window.hideFrameSheetIntroThumb=function(){
     var el=document.getElementById('introThumbCard');
-    if(el){ el.classList.add('is-hidden'); el.classList.remove('is-layout-ready'); el.style.removeProperty('height'); }
+    if(el){ introMobileStableHeight=null; el.classList.add('is-hidden'); el.classList.remove('is-layout-ready'); el.style.removeProperty('height'); }
   };
   window.syncFrameSheetIntroThumb=function(forceShow){
     var el=document.getElementById('introThumbCard');
@@ -5693,7 +5772,13 @@ document.addEventListener('DOMContentLoaded',()=>{
     bindIntroControls();
     window.syncFrameSheetIntroThumb(false);
     window.addEventListener('resize',scheduleIntroFit,{passive:true});
-    window.addEventListener('orientationchange',scheduleIntroFit,{passive:true});
+    window.addEventListener('orientationchange',function(){
+      introMobileViewportCap=null;
+      introMobileStableHeight=null;
+      var card=document.getElementById('introThumbCard');
+      if(card) card.style.removeProperty('height');
+      scheduleIntroFit();
+    },{passive:true});
     if(window.visualViewport) window.visualViewport.addEventListener('resize',scheduleIntroFit,{passive:true});
 
     var img=document.getElementById('introThumbImg');
@@ -6069,8 +6154,8 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(E('colsInput')) E('colsInput').value=st.c || '4';
     if(E('rowsInput')) E('rowsInput').value=st.r || '5';
     if(E('flow')) E('flow').value=st.flow || 'vertical';
-    if(E('margin')) E('margin').value=st.margin || '50';
-    if(E('frameGap')) E('frameGap').value=(st.gap==null ? '50' : st.gap);
+    if(E('margin')) E('margin').value=st.margin || '100';
+    if(E('frameGap')) E('frameGap').value=(st.gap==null ? '100' : st.gap);
     if(E('bgColor')) E('bgColor').value=st.bg || '#ffffff';
     if(E('frameOn')) E('frameOn').checked=true;
     if(E('frameSize')){ E('frameSize').value=st.frameSize || E('frameSize').value || '6'; E('frameSize').disabled=false; }
@@ -6204,7 +6289,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(E('rowsInput')) E('rowsInput').value=st.r || '5';
     if(E('flow')) E('flow').value=st.flow || 'vertical';
     if(E('margin')) E('margin').value=st.margin || '0';
-    if(E('frameGap')) E('frameGap').value=(st.gap==null ? '50' : st.gap);
+    if(E('frameGap')) E('frameGap').value=(st.gap==null ? '100' : st.gap);
     if(E('bgColor')) E('bgColor').value=st.bg || '#ffffff';
     if(E('fitMode') && st.fit) E('fitMode').value=st.fit;
     // 프레임은 "16:9 프레임 기본값 유지"가 우선이므로 항상 켠다.
@@ -6233,7 +6318,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     // manual blankAddOk와 동일한 side effect
     if(E('frameOn')) E('frameOn').checked=true;
     if(E('frameSize')){ if(!E('frameSize').value || E('frameSize').value==='0') E('frameSize').value='6'; E('frameSize').disabled=false; }
-    if(E('frameGap')) E('frameGap').value='50';
+    if(E('frameGap')) E('frameGap').value='100';
     window.__sheetUserEditedRatio=false;
     window.__sheetUserEditedLayout=false;
   }
@@ -6538,8 +6623,8 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(E('flow')) E('flow').value='vertical';
     if(E('frameOn')) E('frameOn').checked=true;
     if(E('frameSize')){ E('frameSize').value='6'; E('frameSize').disabled=false; }
-    if(E('frameGap')) E('frameGap').value='50';
-    if(E('margin')) E('margin').value='50';
+    if(E('frameGap')) E('frameGap').value='100';
+    if(E('margin')) E('margin').value='100';
     if(E('bgColor')) E('bgColor').value='#ffffff';
     if(typeof window.dpcSyncSheetBgPalette==='function') setTimeout(window.dpcSyncSheetBgPalette,0);
     if(E('prefix')) E('prefix').value='';
@@ -6864,7 +6949,7 @@ document.addEventListener('DOMContentLoaded',()=>{
         var frameOn=E('frameOn'), frameSize=E('frameSize'), frameGap=E('frameGap');
         if(frameOn) frameOn.checked=true;
         if(frameSize){ if(!frameSize.value || parseInt(frameSize.value,10)===0) frameSize.value='6'; frameSize.disabled=false; }
-        if(frameGap) frameGap.value='50';
+        if(frameGap) frameGap.value='100';
         window.__sheetUserEditedRatio=false;
         window.__sheetUserEditedLayout=false;
         if(typeof recommend==='function') recommend();
@@ -8134,8 +8219,8 @@ select:focus,input[type=number]:focus,input[type=text]:focus,textarea:focus{
     if(typeof hideFrameSheetIntroThumb === 'function') hideFrameSheetIntroThumb();
     else if(typeof syncFrameSheetIntroThumb === 'function') syncFrameSheetIntroThumb(false);
   }
-  function syncAll(){
-    if(typeof render === 'function') render();
+  function syncAll(options){
+    if(typeof render === 'function') render(options);
     if(typeof syncCutListVisibility === 'function') syncCutListVisibility();
     if(typeof syncSourceCard === 'function') syncSourceCard();
     if(typeof syncSheetPageInfo === 'function') syncSheetPageInfo();
@@ -8178,12 +8263,9 @@ select:focus,input[type=number]:focus,input[type=text]:focus,textarea:focus{
         if(m) prefix.value=m[1];
       }
       await readMeta(added);
-      window.__sheetUserEditedRatio=false;
-      window.__sheetUserEditedLayout=false;
-      window.__fsCurrentUiDirty=false;
-      syncAll();
-      if(typeof recommend === 'function') recommend();
-      syncAll();
+      /* 추가는 현재 시트 설정에 데이터만 더한다. 새 파일 선택(replace)과 달리
+         시트 비율·규격·외곽·간격을 다시 추천하지 않는다. */
+      syncAll({skipRecommend:true});
       hideIntro();
     }, true);
     return inp;
@@ -9189,6 +9271,17 @@ function orientSheetRecommendation(c,r,rw,rh,fromFlow,toFlow){
  return {c:nextC,r:nextR,rw:best[0],rh:best[1]};
 }
 
+/* 외곽·간격 추천 공통식.
+ * 단계값은 기존 40/60/100/150 규칙을 유지하고, 판단 컷 수만 현재
+ * 최종 규격의 한 페이지 수용량으로 제한한다. */
+function recommendedSheetSpacing(totalCount,cols,rows,isUltra){
+ const pageCount=Math.max(1,Math.min(Math.max(1,totalCount||1),Math.max(1,cols||1)*Math.max(1,rows||1)));
+ if(pageCount<=2) return 40;
+ if(!isUltra && pageCount<=4) return 60;
+ if(pageCount<=20) return 100;
+ return 150;
+}
+
 function recommend(request){
  if(!autoMode) return;
  const linked=!!(request&&request.__sheetLinkedRecommendation===true);
@@ -9204,13 +9297,12 @@ function recommend(request){
  const isUltra = (activeRatio==='ultrawide' || activeRatio==='21:9' || activeRatio==='32:9' || activeRatio==='4:1');
 
  let c=1,r=1,rw=1,rh=1;
- let mg=100,gp=100;
  let nextFlow=(flow&&flow.value)||'vertical';
  const userFlowOverride=window.__sheetUserEditedFlow && (nextFlow==='horizontal'||nextFlow==='vertical') ? nextFlow : null;
 
  if(isUltra){
-   if(n===1){ c=1; r=1; rw=4; rh=1; mg=40; gp=40; }
-   else if(n===2){ c=1; r=2; rw=2; rh=1; mg=40; gp=40; }
+   if(n===1){ c=1; r=1; rw=4; rh=1;  }
+   else if(n===2){ c=1; r=2; rw=2; rh=1;  }
    else if(n===3){ c=1; r=3; rw=4; rh=3; }
    else if(n===4){ c=1; r=4; rw=1; rh=1; }
    else if(n===5){ c=1; r=5; rw=4; rh=5; }
@@ -9223,13 +9315,13 @@ function recommend(request){
    else if(n<=16){ c=2; r=8; rw=4; rh=5; }
    else if(n<=18){ c=2; r=9; rw=4; rh=5; }
    else if(n<=20){ c=2; r=10; rw=7; rh=10; }
-   else if(n<=24){ c=3; r=8; rw=1; rh=1; mg=150; gp=150; }
-   else if(n<=30){ c=3; r=10; rw=1; rh=1; mg=150; gp=150; }
-   else { c=3; r=10; rw=1; rh=1; mg=150; gp=150; }
+   else if(n<=24){ c=3; r=8; rw=1; rh=1;  }
+   else if(n<=30){ c=3; r=10; rw=1; rh=1;  }
+   else { c=3; r=10; rw=1; rh=1;  }
 
    // 4:1 dedicated requested rule. Only this count is changed; all other 4:1 rules stay intact.
    if(activeRatio==='4:1'){
-     if(n===1){ c=1; r=1; rw=32; rh=9; mg=40; gp=40; }
+     if(n===1){ c=1; r=1; rw=32; rh=9;  }
      else if(n===9){ c=1; r=9; rw=9; rh=20; }
    }
 
@@ -9237,8 +9329,8 @@ function recommend(request){
    if(activeRatio==='21:9'){
      const keys21=[1,2,3,4,6,8,9,10,12,14,15,16,18,20,24];
      const k21=keys21.find(v=>n<=v) || keys21[keys21.length-1];
-     if(k21===1){ c=1; r=1; rw=16; rh=9; mg=40; gp=40; }
-     else if(k21===2){ c=1; r=2; rw=4; rh=3; mg=40; gp=40; }
+     if(k21===1){ c=1; r=1; rw=16; rh=9;  }
+     else if(k21===2){ c=1; r=2; rw=4; rh=3;  }
      else if(k21===3){ c=1; r=3; rw=1; rh=1; }
      else if(k21===4){ c=2; r=2; rw=16; rh=9; }
      else if(k21===6){ c=2; r=3; rw=4; rh=3; }
@@ -9251,15 +9343,15 @@ function recommend(request){
      else if(k21===16){ c=2; r=8; rw=9; rh=16; }
      else if(k21===18){ c=2; r=9; rw=9; rh=20; }
      else if(k21===20){ c=2; r=10; rw=9; rh=20; }
-     else if(k21===24){ c=3; r=8; rw=4; rh=5; mg=150; gp=150; }
+     else if(k21===24){ c=3; r=8; rw=4; rh=5;  }
    }
 
    // 32:9 dedicated recommendation rules. Missing counts use the next nearest count rule so they do not fall back to unrelated defaults.
    if(activeRatio==='32:9'){
      const keys32=[1,2,3,4,6,8,9,10,12,14,15,16,18,20,24];
      const k32=keys32.find(v=>n<=v) || keys32[keys32.length-1];
-     if(k32===1){ c=1; r=1; rw=21; rh=9; mg=40; gp=40; }
-     else if(k32===2){ c=1; r=2; rw=16; rh=9; mg=40; gp=40; }
+     if(k32===1){ c=1; r=1; rw=21; rh=9;  }
+     else if(k32===2){ c=1; r=2; rw=16; rh=9;  }
      else if(k32===3){ c=1; r=3; rw=1; rh=1; }
      else if(k32===4){ c=1; r=4; rw=4; rh=5; }
      else if(k32===6){ c=2; r=3; rw=16; rh=9; }
@@ -9272,25 +9364,25 @@ function recommend(request){
      else if(k32===16){ c=2; r=8; rw=4; rh=5; }
      else if(k32===18){ c=2; r=9; rw=7; rh=10; }
      else if(k32===20){ c=2; r=10; rw=9; rh=16; }
-     else if(k32===24){ c=3; r=8; rw=1; rh=1; mg=150; gp=150; }
+     else if(k32===24){ c=3; r=8; rw=1; rh=1;  }
    }
 
    nextFlow='vertical';
  }else{
-   if(n===1){c=1;r=1;rw=16;rh=9;mg=40;gp=40;}
-   else if(n===2){c=1;r=2;rw=1;rh=1;mg=40;gp=40;}
-   else if(n<=4){c=2;r=2;rw=16;rh=9;mg=60;gp=60;}
-   else if(n<=6){c=2;r=3;rw=1;rh=1;mg=100;gp=100;}
-   else if(n<=8){c=2;r=4;rw=4;rh=5;mg=100;gp=100;}
-   else if(n===9){c=3;r=3;rw=1;rh=1;mg=100;gp=100;}
-   else if(n<=10){c=2;r=5;rw=7;rh=10;mg=100;gp=100;}
-   else if(n<=12){c=3;r=4;rw=1;rh=1;mg=100;gp=100;}
-   else if(n<=15){c=3;r=5;rw=1;rh=1;mg=100;gp=100;}
-   else if(n===16){c=4;r=4;rw=5;rh=4;mg=100;gp=100;}
-   else if(n<=20){c=4;r=5;rw=10;rh=7;mg=100;gp=100;}
-   else if(n<=25){c=5;r=5;rw=16;rh=9;mg=150;gp=150;}
-   else if(n<=30){c=6;r=5;rw=16;rh=9;mg=150;gp=150;}
-   else {c=6;r=5;rw=16;rh=9;mg=150;gp=150;}
+   if(n===1){c=1;r=1;rw=16;rh=9; }
+   else if(n===2){c=1;r=2;rw=1;rh=1; }
+   else if(n<=4){c=2;r=2;rw=16;rh=9; }
+   else if(n<=6){c=2;r=3;rw=1;rh=1; }
+   else if(n<=8){c=2;r=4;rw=4;rh=5; }
+   else if(n===9){c=3;r=3;rw=1;rh=1; }
+   else if(n<=10){c=2;r=5;rw=7;rh=10; }
+   else if(n<=12){c=3;r=4;rw=1;rh=1; }
+   else if(n<=15){c=3;r=5;rw=1;rh=1; }
+   else if(n===16){c=4;r=4;rw=5;rh=4; }
+   else if(n<=20){c=4;r=5;rw=10;rh=7; }
+   else if(n<=25){c=5;r=5;rw=16;rh=9; }
+   else if(n<=30){c=6;r=5;rw=16;rh=9; }
+   else {c=6;r=5;rw=16;rh=9; }
 
    nextFlow='vertical';
 
@@ -9318,7 +9410,7 @@ function recommend(request){
        }else if(fr==='16:9'){
          if(n===12){ c=3; r=4; rw=4; rh=3; }
          else if(n===20){ c=4; r=5; rw=4; rh=3; }
-         else if(n===24){ c=4; r=6; rw=1; rh=1; mg=150; gp=150; }
+         else if(n===24){ c=4; r=6; rw=1; rh=1;  }
          else if(n>=20){ rw=16; rh=9; }
        }else if(fr==='1.85:1' || fr==='2:1'){
          if(n>=20){ rw=16; rh=9; }
@@ -9346,8 +9438,8 @@ function recommend(request){
          if(n===10){ c=2; r=5; rw=2; rh=3; }
          else if(n===12){ c=3; r=4; rw=5; rh=4; }
          else if(n===20){ c=4; r=5; rw=5; rh=4; }
-         else if(n===24){ c=4; r=6; rw=1; rh=1; mg=150; gp=150; }
-         else if(n===30){ c=6; r=5; rw=16; rh=9; mg=150; gp=150; }
+         else if(n===24){ c=4; r=6; rw=1; rh=1;  }
+         else if(n===30){ c=6; r=5; rw=16; rh=9;  }
        }else if(fr==='9:20'){
          // 9:20 is a real selectable preset. Apply its own sheet-ratio recommendation rules.
          // For portrait-frame handling below, most values are set pre-swap so the final sheet ratio matches the requested rule.
@@ -9359,7 +9451,7 @@ function recommend(request){
          else if(n===15){ rw=5; rh=4; }    // final 4:5
          else if(n===16){ rw=16; rh=9; }   // final 9:16
          else if(n===20){ c=4; r=5; rw=10; rh=7; }  // final A4 portrait(7:10)
-         else if(n===24){ c=4; r=6; rw=5; rh=4; mg=150; gp=150; } // final 4:5
+         else if(n===24){ c=4; r=6; rw=5; rh=4;  } // final 4:5
        }
      }
    }catch(e){}
@@ -9424,8 +9516,9 @@ function recommend(request){
      btn.textContent='선택 ▼';
    }
  }
- document.getElementById('margin').value=mg;
- document.getElementById('frameGap').value=gp;
+ const pageSpacing=recommendedSheetSpacing(n,c,r,isUltra);
+ document.getElementById('margin').value=pageSpacing;
+ document.getElementById('frameGap').value=pageSpacing;
  syncFrameSheetOptionLabels();
 }
 
@@ -9466,7 +9559,11 @@ recommend=function(){
 };
 
 const r0=render;
-render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
+render=function(options){
+  r0();
+  if(!(options&&options.skipRecommend)) recommend();
+  syncFrameSheetOptionLabels();
+}
 </script>
 
 
@@ -9568,10 +9665,10 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
   }
   function recFor(n, activeRatio){
     const isUltra = (activeRatio==='ultrawide' || activeRatio==='21:9' || activeRatio==='32:9' || activeRatio==='4:1');
-    let c=1,r=1,rw=1,rh=1,mg=100,gp=100,fl='vertical';
+    let c=1,r=1,rw=1,rh=1,fl='vertical';
     if(isUltra){
-      if(n===1){ c=1; r=1; rw=4; rh=1; mg=40; gp=40; }
-      else if(n===2){ c=1; r=2; rw=2; rh=1; mg=40; gp=40; }
+      if(n===1){ c=1; r=1; rw=4; rh=1;  }
+      else if(n===2){ c=1; r=2; rw=2; rh=1;  }
       else if(n===3){ c=1; r=3; rw=4; rh=3; }
       else if(n===4){ c=1; r=4; rw=1; rh=1; }
       else if(n===5){ c=1; r=5; rw=4; rh=5; }
@@ -9584,13 +9681,14 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
       else if(n<=16){ c=2; r=8; rw=4; rh=5; }
       else if(n<=18){ c=2; r=9; rw=4; rh=5; }
       else if(n<=20){ c=2; r=10; rw=7; rh=10; }
-      else if(n<=24){ c=3; r=8; rw=1; rh=1; mg=150; gp=150; }
-      else { c=3; r=10; rw=1; rh=1; mg=150; gp=150; }
-      return {c,r,rw,rh,mg,gp,flow:fl};
+      else if(n<=24){ c=3; r=8; rw=1; rh=1;  }
+      else { c=3; r=10; rw=1; rh=1;  }
+      const spacing=recommendedSheetSpacing(n,c,r,true);
+      return {c,r,rw,rh,mg:spacing,gp:spacing,flow:fl};
     }
-    if(n===1){c=1;r=1;rw=16;rh=9;mg=40;gp=40;}
-    else if(n===2){c=1;r=2;rw=1;rh=1;mg=40;gp=40;}
-    else if(n<=4){c=2;r=2;rw=16;rh=9;mg=60;gp=60;}
+    if(n===1){c=1;r=1;rw=16;rh=9; }
+    else if(n===2){c=1;r=2;rw=1;rh=1; }
+    else if(n<=4){c=2;r=2;rw=16;rh=9; }
     else if(n<=6){c=2;r=3;rw=1;rh=1;}
     else if(n<=8){c=2;r=4;rw=4;rh=5;}
     else if(n===9){c=3;r=3;rw=1;rh=1;}
@@ -9599,8 +9697,8 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
     else if(n<=15){c=3;r=5;rw=1;rh=1;}
     else if(n===16){c=4;r=4;rw=5;rh=4;}
     else if(n<=20){c=4;r=5;rw=10;rh=7;}
-    else if(n<=25){c=5;r=5;rw=16;rh=9;mg=150;gp=150;}
-    else {c=6;r=5;rw=16;rh=9;mg=150;gp=150;}
+    else if(n<=25){c=5;r=5;rw=16;rh=9; }
+    else {c=6;r=5;rw=16;rh=9; }
 
     const fr=activeRatio;
     if(fr==='2.35:1' || fr==='2.39:1'){
@@ -9624,7 +9722,7 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
     }else if(fr==='16:9'){
       if(n===12){ c=3; r=4; rw=4; rh=3; }
       else if(n===20){ c=4; r=5; rw=4; rh=3; }
-      else if(n===24){ c=4; r=6; rw=1; rh=1; mg=150; gp=150; }
+      else if(n===24){ c=4; r=6; rw=1; rh=1;  }
       else if(n>=20){ rw=16; rh=9; }
     }else if(fr==='1.85:1' || fr==='2:1'){
       if(n>=20){ rw=16; rh=9; }
@@ -9638,8 +9736,8 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
       if(n===10){ c=2; r=5; rw=2; rh=3; }
       else if(n===12){ c=3; r=4; rw=5; rh=4; }
       else if(n===20){ c=4; r=5; rw=5; rh=4; }
-      else if(n===24){ c=4; r=6; rw=1; rh=1; mg=150; gp=150; }
-      else if(n===30){ c=6; r=5; rw=16; rh=9; mg=150; gp=150; }
+      else if(n===24){ c=4; r=6; rw=1; rh=1;  }
+      else if(n===30){ c=6; r=5; rw=16; rh=9;  }
     }else if(fr==='9:20'){
       // 9:20 dedicated per-page recommendation rules. Values are pre-swap for portrait-frame handling.
       if(n===6){ rw=5; rh=4; }
@@ -9649,7 +9747,7 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
       else if(n===12){ c=3; r=4; rw=10; rh=7; }
       else if(n===15){ rw=5; rh=4; }
       else if(n===20){ c=4; r=5; rw=10; rh=7; }
-      else if(n===24){ c=4; r=6; rw=5; rh=4; mg=150; gp=150; }
+      else if(n===24){ c=4; r=6; rw=5; rh=4;  }
     }
     if(fr==='9:16' || fr==='9:20' || fr==='4:5' || fr==='7:10'){
       const tc=c; c=r; r=tc;
@@ -9657,7 +9755,8 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
       if(!keepCanvas){ const tr=rw; rw=rh; rh=tr; }
       fl='horizontal';
     }
-    return {c,r,rw,rh,mg,gp,flow:fl};
+    const spacing=recommendedSheetSpacing(n,c,r,false);
+    return {c,r,rw,rh,mg:spacing,gp:spacing,flow:fl};
   }
   function pageSize(rw,rh){
     const w=num(rw,16), h=num(rh,9);
@@ -10088,8 +10187,8 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
             if(el('colsInput')) el('colsInput').value=saved.c || '4';
             if(el('rowsInput')) el('rowsInput').value=saved.r || '5';
             if(el('flow')) el('flow').value=saved.flow || 'vertical';
-            if(el('margin')) el('margin').value=saved.margin || '50';
-            if(el('frameGap')) el('frameGap').value=(saved.gap==null ? '50' : saved.gap);
+            if(el('margin')) el('margin').value=saved.margin || '100';
+            if(el('frameGap')) el('frameGap').value=(saved.gap==null ? '100' : saved.gap);
             if(el('bgColor')) el('bgColor').value=saved.bg || '#ffffff';
             if(el('frameOn')) el('frameOn').checked=true;
             if(el('frameSize')){ el('frameSize').value=el('frameSize').value || '6'; el('frameSize').disabled=false; }
@@ -10188,8 +10287,8 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
     if(E('colsInput')) E('colsInput').value=s.c || '4';
     if(E('rowsInput')) E('rowsInput').value=s.r || '5';
     if(E('flow')) E('flow').value=s.flow || 'vertical';
-    if(E('margin')) E('margin').value=s.margin || '50';
-    if(E('frameGap')) E('frameGap').value=(s.gap==null ? '50' : s.gap);
+    if(E('margin')) E('margin').value=s.margin || '100';
+    if(E('frameGap')) E('frameGap').value=(s.gap==null ? '100' : s.gap);
     if(E('bgColor')) E('bgColor').value=s.bg || '#ffffff';
   }
   function makeBlank16x9DataUrl(){
@@ -10217,7 +10316,7 @@ render=function(){ r0(); recommend(); syncFrameSheetOptionLabels(); }
     var frameOn=E('frameOn'), frameSize=E('frameSize'), frameGap=E('frameGap');
     if(frameOn) frameOn.checked=true;
     if(frameSize){ if(!frameSize.value) frameSize.value='6'; frameSize.disabled=false; }
-    if(frameGap) frameGap.value='50';
+    if(frameGap) frameGap.value='100';
     window.__sheetUserEditedRatio=false;
     window.__sheetUserEditedLayout=false;
   }
@@ -11600,6 +11699,8 @@ body.__sheet_processing #make.sheetBtn:focus{
       insideLab.classList.toggle('is-disabled',!enabled);
       outsideLab.classList.toggle('is-disabled',!enabled || !textMarginOn.checked);
     }
+    window.dpcSyncMarginRuleControls=syncCropByRule;
+    window.dpcSyncCutNumberControls=syncCutNumberControls;
     cutNumberOn.onchange=syncCutNumberControls;
     function applyAutomaticTextMarginBalance(recommendLayout){
       if(!textMarginOn.checked) return;
@@ -12064,9 +12165,16 @@ body.__sheet_processing #make.sheetBtn:focus{
   }
   #advancedOptions #dpcAdvClean .dpc-adv-row{margin:6px 0!important;min-height:34px!important;}
   #advancedOptions #dpcAdvClean .dpc-adv-row-2{gap:7px!important;}
-  #advancedOptions #dpcAdvClean .dpc-adv-row-4{gap:4px!important;}
-  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-text-margin-check{min-width:0!important;margin-right:3px!important;}
-  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-cut-number-position{gap:2px!important;}
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4{
+    display:grid!important;
+    grid-template-columns:max-content max-content!important;
+    justify-content:start!important;
+    column-gap:14px!important;
+    row-gap:8px!important;
+    white-space:normal!important;
+  }
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-text-margin-check{min-width:0!important;margin-right:0!important;}
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-cut-number-position{gap:3px!important;}
 }
 @media(max-width:380px){
   #advancedOptions #dpcAdvClean .dpc-adv-row-2{gap:5px!important;}
@@ -12608,8 +12716,9 @@ body.__sheet_processing #make.sheetBtn:focus{
   window.dpcStandardSlideSizeForRatio=standardSlideSizeForRatio;
   function bgFill(ctx,W,H){ var bg=gv('bgColor','#ffffff'); if(bg!=='transparent'){ ctx.fillStyle=bg; ctx.fillRect(0,0,W,H); } }
   function canvasGuardScale(w,h){
-    var textOn=!!(E('textMarginOn')&&E('textMarginOn').checked);
-    var mobile=textOn || matchMedia('(max-width:700px)').matches || (navigator.deviceMemory && navigator.deviceMemory<=4);
+    /* 텍스트 여백은 출력 내용이지 기기 성능 조건이 아니다.
+       실제 모바일·저사양 기기에서만 안전 상한을 낮춘다. */
+    var mobile=matchMedia('(max-width:700px)').matches || (navigator.deviceMemory && navigator.deviceMemory<=4);
     var maxSide=mobile?6144:8192, maxPixels=mobile?18000000:32000000;
     w=Math.max(1,Math.ceil(w||1)); h=Math.max(1,Math.ceil(h||1));
     return Math.min(1,maxSide/w,maxSide/h,Math.sqrt(maxPixels/(w*h)));
@@ -12767,7 +12876,7 @@ body.__sheet_processing #make.sheetBtn:focus{
       ? {w:imageW+band,h:imageH,imageW:imageW,imageH:imageH,side:side,band:band,separator:separator}
       : {w:imageW,h:imageH+band,imageW:imageW,imageH:imageH,side:side,band:band,separator:separator};
   }
-  async function sharedPixelPlanForPages(pageLists,opt,globalReferenceItem){
+  async function sharedPixelBasisForGroup(pageLists,opt,globalReferenceItem){
     if(!pageLists.length || opt.fit!=='pixel') return null;
     /* 잔여 외곽 크롭은 마지막 페이지의 규격 자체를 바꾸는 명시적 옵션이다.
        전체 규격을 유지하는 일반 경로만 공통 페이지 계획을 공유한다. */
@@ -12806,41 +12915,85 @@ body.__sheet_processing #make.sheetBtn:focus{
         ? {col:i%cols,row:Math.floor(i/cols)}
         : {row:i%rows,col:Math.floor(i/rows)};
     }
-    function atRate(rate){
+    /* 각 페이지의 열·행 크기는 그 페이지 컷으로만 계산한다.
+       채워진 행/열은 그 안의 실제 컷만 기준으로 삼고, 완전히 빈 행/열만
+       기준 컷 크기를 사용한다. 따라서 와이드 컷만 있는 행은 불필요하게
+       기준 컷 높이까지 늘어나지 않으며 모든 컷의 원본 비율이 유지된다. */
+    function pageGridAtRate(boxes,rate){
       var base=textCompositeDimensions(textEnabled,side,rate,fs,baseRaw.ar,baseRaw.imageW,baseRaw.imageH);
-      var widths=new Array(cols).fill(Math.max(1,base.w));
-      var heights=new Array(rows).fill(Math.max(1,base.h));
-      for(var p=0;p<pageBoxes.length;p++){
-        for(var i=0;i<pageBoxes[p].length;i++){
-          var b=pageBoxes[p][i], c=textCompositeDimensions(textEnabled,side,rate,fs,b.ar,b.imageW,b.imageH), at=pos(i);
-          if(at.col>=cols||at.row>=rows) continue;
-          widths[at.col]=Math.max(widths[at.col],c.w);
-          heights[at.row]=Math.max(heights[at.row],c.h);
-        }
+      var widths=new Array(cols).fill(0);
+      var heights=new Array(rows).fill(0);
+      for(var i=0;i<boxes.length;i++){
+        var b=boxes[i], c=textCompositeDimensions(textEnabled,side,rate,fs,b.ar,b.imageW,b.imageH), at=pos(i);
+        if(at.col>=cols||at.row>=rows) continue;
+        widths[at.col]=Math.max(widths[at.col],c.w);
+        heights[at.row]=Math.max(heights[at.row],c.h);
       }
+      widths=widths.map(function(v){return v>0?v:Math.max(1,base.w);});
+      heights=heights.map(function(v){return v>0?v:Math.max(1,base.h);});
       var naturalW=widths.reduce(function(a,b){return a+b;},0)+cols*fs*2+(cols-1)*gap+margin*2;
       var naturalH=heights.reduce(function(a,b){return a+b;},0)+rows*fs*2+(rows-1)*gap+margin*2;
       return {rate:rate,colW:widths,rowH:heights,ratio:naturalW/naturalH};
     }
-    var grid=atRate(1);
+    /* 텍스트 여백 비율은 첫 페이지가 기준이다. 뒤 페이지가 앞 페이지의
+       빈 프레임 크기나 간격을 바꾸지 못하도록 첫 페이지에서 한 번 확정한다. */
+    var firstBoxes=pageBoxes[0]||[];
+    var grid=pageGridAtRate(firstBoxes,1);
     if(textEnabled){
       var canUseMore=(side==='right'&&grid.ratio<targetRatio)||(side==='bottom'&&grid.ratio>targetRatio);
       if(canUseMore){
-        var low=1, high=20, highGrid=atRate(high);
+        var low=1, high=20, highGrid=pageGridAtRate(firstBoxes,high);
         var reaches=(side==='right'&&highGrid.ratio>=targetRatio)||(side==='bottom'&&highGrid.ratio<=targetRatio);
         if(reaches){
           for(var bs=0;bs<48;bs++){
-            var mid=(low+high)/2, midGrid=atRate(mid);
+            var mid=(low+high)/2, midGrid=pageGridAtRate(firstBoxes,mid);
             if(side==='right'){ if(midGrid.ratio<targetRatio) low=mid; else high=mid; }
             else{ if(midGrid.ratio>targetRatio) low=mid; else high=mid; }
           }
-          grid=atRate((low+high)/2);
+          grid=pageGridAtRate(firstBoxes,(low+high)/2);
         }else grid=highGrid;
       }
     }
-    return {cols:cols,rows:rows,rate:grid.rate,colW:grid.colW,rowH:grid.rowH};
+    /* 한 페이지의 자연 크기를 구한다. 이미지/텍스트 복합 셀은 반드시
+       동일한 geometryScale로만 줄여 종횡비를 보존한다. */
+    function guardedCanvasFor(boxes,geometryScale){
+      var pageGrid=pageGridAtRate(boxes,grid.rate);
+      var scaledW=pageGrid.colW.map(function(v){return v*geometryScale;});
+      var scaledH=pageGrid.rowH.map(function(v){return v*geometryScale;});
+      var naturalW=scaledW.reduce(function(a,b){return a+b;},0)+cols*fs*2+(cols-1)*gap+margin*2;
+      var naturalH=scaledH.reduce(function(a,b){return a+b;},0)+rows*fs*2+(rows-1)*gap+margin*2;
+      if(naturalW/naturalH>targetRatio) naturalH=naturalW/targetRatio;
+      else if(naturalW/naturalH<targetRatio) naturalW=naturalH*targetRatio;
+      return {w:naturalW,h:naturalH};
+    }
+    /* 첫 페이지가 공통 시트와 정상 컷의 기준 크기를 확정한다.
+       뒤 페이지의 튀는 비율은 이 값을 역으로 바꿀 권한이 없다. */
+    var geometryScale=1;
+    for(var pass=0;pass<4;pass++){
+      var guarded=guardedCanvasFor(firstBoxes,geometryScale);
+      var correction=canvasGuardScale(guarded.w,guarded.h);
+      if(correction>=0.999999) break;
+      geometryScale*=correction;
+    }
+    /* 첫 페이지의 시트·간격·프레임 크기를 이후 페이지가 그대로 쓴다. */
+    function templateAtScale(scaleValue){
+      var templatePage=guardedCanvasFor(firstBoxes,scaleValue);
+      var templateW=templatePage.w, templateH=templatePage.h;
+      if(templateW/templateH>targetRatio) templateH=templateW/targetRatio;
+      else templateW=templateH*targetRatio;
+      return {W:Math.ceil(templateW),H:Math.ceil(templateH)};
+    }
+    return {
+      cols:cols,rows:rows,rate:grid.rate,geometryScale:geometryScale,
+      template:templateAtScale(geometryScale),templateAtScale:templateAtScale,
+      /* 뒤 페이지에서 이 크기를 넘는 컷만 개별 등비 축소한다. */
+      trackCapacity:{
+        colW:grid.colW.map(function(v){return v*geometryScale;}),
+        rowH:grid.rowH.map(function(v){return v*geometryScale;})
+      }
+    };
   }
-  async function drawPage(list,opt,pageNo,numberStart,globalReferenceItem,sharedPixelPlan){
+  async function drawPage(list,opt,pageNo,numberStart,globalReferenceItem,sharedPixelBasis){
     var cols=Math.max(1,opt.c), rows=Math.max(1,opt.r);
     var max=0; list.forEach(function(it){ max=Math.max(max,normRatio(it)); });
     // 규격 고정 상태가 아닐 때만 기존 초와이드 보호 규칙을 적용한다.
@@ -12998,27 +13151,28 @@ body.__sheet_processing #make.sheetBtn:focus{
         var boxes=rawImageBoxes.map(function(b){ return textCompositeForImage(b.ar,b.imageW,b.imageH); });
         var baseRaw=rawImageBoxes[0];
         var baseBox=textCompositeForImage(baseRaw.ar,baseRaw.imageW,baseRaw.imageH);
-        var widths=new Array(layoutCols).fill(Math.max(1,baseBox.w));
-        var heights=new Array(layoutRows).fill(Math.max(1,baseBox.h));
+        var widths=new Array(layoutCols).fill(0);
+        var heights=new Array(layoutRows).fill(0);
         for(var gi=0;gi<boxes.length;gi++){
           var gp=posForIndex(gi); if(gp.col>=layoutCols||gp.row>=layoutRows) continue;
           widths[gp.col]=Math.max(widths[gp.col],boxes[gi].w);
           heights[gp.row]=Math.max(heights[gp.row],boxes[gi].h);
         }
+        /* 실제 컷이 있는 행/열은 그 컷들의 자연 크기로 독립 계산한다.
+           완전히 빈 행/열만 기준 프레임 크기로 예약한다. */
+        widths=widths.map(function(v){return v>0?v:Math.max(1,baseBox.w);});
+        heights=heights.map(function(v){return v>0?v:Math.max(1,baseBox.h);});
         var naturalW=sum(widths)+layoutCols*fs*2+(layoutCols-1)*gap+margin*2;
         var naturalH=sum(heights)+layoutRows*fs*2+(layoutRows-1)*gap+margin*2;
         return {rate:textMarginRate,boxes:boxes,colW:widths,rowH:heights,ratio:naturalW/naturalH};
       }
       var grid;
-      var usingSharedPlan=!!(sharedPixelPlan && sharedPixelPlan.cols===layoutCols && sharedPixelPlan.rows===layoutRows);
+      var usingSharedPlan=!!(sharedPixelBasis && sharedPixelBasis.cols===layoutCols && sharedPixelBasis.rows===layoutRows);
       if(usingSharedPlan){
-        textMarginRate=Math.max(1,Number(sharedPixelPlan.rate)||1);
-        grid={
-          rate:textMarginRate,
-          boxes:rawImageBoxes.map(function(b){return textCompositeForImage(b.ar,b.imageW,b.imageH);}),
-          colW:sharedPixelPlan.colW.slice(),
-          rowH:sharedPixelPlan.rowH.slice()
-        };
+        textMarginRate=Math.max(1,Number(sharedPixelBasis.rate)||1);
+        /* 공통 기준은 배율과 텍스트 비율뿐이다. 열·행 크기는 현재 페이지의
+           컷만으로 계산해 뒤 페이지가 앞 페이지를 바꾸는 역참조를 없앤다. */
+        grid=gridAtRate(textMarginRate);
       }else grid=gridAtRate(1);
       if(textMarginEnabled && !usingSharedPlan){
         var side=opt.flow==='horizontal'?'bottom':'right';
@@ -13041,23 +13195,189 @@ body.__sheet_processing #make.sheetBtn:focus{
       }
       var itemBoxes=grid.boxes, colW=grid.colW, rowH=grid.rowH;
       var sol=solveGridPlan(colW,rowH,gap,margin,targetRatio);
-      var scale=canvasGuardScale(sol.W,sol.H);
+      var sharedGeometryScale=usingSharedPlan?Math.max(.000001,Math.min(1,Number(sharedPixelBasis.geometryScale)||1)):1;
+      /* 공통 계획이 있으면 모바일 캔버스 상한은 첫 페이지에서 이미 한 번
+         확정됐다. 현재 페이지의 임시 자연 크기에 다시 적용하면 3페이지처럼
+         실제로는 고정 시트에 들어오는 페이지까지 불필요하게 축소된다. */
+      var scale=usingSharedPlan
+        ? sharedGeometryScale
+        : Math.min(1,canvasGuardScale(sol.W,sol.H));
       if(scale<1){
-        itemBoxes=itemBoxes.map(function(b){
-          return {w:b.w*scale,h:b.h*scale,imageW:b.imageW*scale,imageH:b.imageH*scale,side:b.side,band:b.band*scale,separator:b.separator*scale};
+        /* 캔버스 상한은 이미지/텍스트 영역 해상도에만 적용한다.
+           사용자가 지정한 프레임·간격·외곽 값은 최종 출력 픽셀 값이므로
+           소수로 축소하지 않는다. 같은 계획을 쓰는 모든 페이지가 동일 배율을 쓴다. */
+        var sourceBoxes=itemBoxes.slice(), sourceColW=colW.slice(), sourceRowH=rowH.slice();
+        var geometryScale=scale;
+        function applyGeometryScaleOnce(){
+          itemBoxes=sourceBoxes.map(function(b){
+            return {w:b.w*geometryScale,h:b.h*geometryScale,imageW:b.imageW*geometryScale,imageH:b.imageH*geometryScale,side:b.side,band:b.band*geometryScale,separator:fs};
+          });
+          colW=sourceColW.map(function(v){return v*geometryScale;});
+          rowH=sourceRowH.map(function(v){return v*geometryScale;});
+          sol=solveGridPlan(colW,rowH,gap,margin,targetRatio);
+        }
+        applyGeometryScaleOnce();
+        /* 공통 계획은 첫 페이지에서 이미 안전 배율을 확정했다.
+           뒤 페이지가 이 배율을 다시 평가하면 페이지별 프레임 크기가 달라진다. */
+        for(var guardPass=0;!usingSharedPlan && guardPass<4;guardPass++){
+          var correction=canvasGuardScale(sol.W,sol.H);
+          if(correction>=0.999999) break;
+          geometryScale*=correction;
+          applyGeometryScaleOnce();
+        }
+      }
+      var isolatedPositions=null;
+      /* 첫 페이지 뒤부터는 페이지 전체 그리드를 다시 풀지 않는다.
+         높이 기준은 행별 X축, 폭 기준은 열별 Y축만 독립 검사한다. */
+      if(usingSharedPlan && sharedPixelBasis.referenceLayout){
+        var referenceLayout=sharedPixelBasis.referenceLayout;
+        var capCols=referenceLayout.colW||[];
+        var capRows=referenceLayout.rowH||[];
+        var fixedTemplate=sharedPixelBasis.template;
+        var axisIsX=cutMode==='height';
+        var groupCount=axisIsX?layoutRows:layoutCols;
+        var referenceStarts=axisIsX?referenceLayout.colStarts:referenceLayout.rowStarts;
+        var crossStarts=axisIsX?referenceLayout.rowStarts:referenceLayout.colStarts;
+        var protectedTracks=axisIsX?capCols:capRows;
+        var canvasAxis=axisIsX?fixedTemplate.W:fixedTemplate.H;
+        /* 예외 행/열은 정상 행의 좌표를 건드리지 않은 채 자체적으로만 맞춘다.
+           사용자가 정한 간격이 넉넉하면 프레임 두께만큼의 가시 간격까지 줄이고,
+           그래도 부족할 때에만 이 행/열의 컷을 등비 축소한다. gap=0/음수는
+           사용자가 명시한 값이므로 그대로 존중한다. */
+        var configuredGap=Math.max(-fs,Number(gap)||0);
+        var minimumGap=configuredGap>0?Math.min(configuredGap,Math.max(1,fs)):configuredGap;
+        var groups=new Array(groupCount).fill(0).map(function(){return [];});
+        isolatedPositions=new Array(itemBoxes.length);
+        for(var groupItem=0;groupItem<itemBoxes.length;groupItem++){
+          var groupAt=posForIndex(groupItem);
+          var groupIndex=axisIsX?groupAt.row:groupAt.col;
+          var trackIndex=axisIsX?groupAt.col:groupAt.row;
+          if(groupIndex<groupCount) groups[groupIndex].push({index:groupItem,track:trackIndex});
+        }
+        function scaleCompositeBox(box,factor){
+          if(factor>=0.999999) return box;
+          return {w:box.w*factor,h:box.h*factor,imageW:box.imageW*factor,imageH:box.imageH*factor,
+            side:box.side,band:box.band*factor,separator:fs};
+        }
+        groups.forEach(function(entries,groupIndex){
+          if(!entries.length) return;
+          entries.sort(function(a,b){return a.track-b.track;});
+          var fitsReference=true;
+          for(var entryNo=0;entryNo<entries.length;entryNo++){
+            var entry=entries[entryNo], box=itemBoxes[entry.index];
+            var start=Number(referenceStarts[entry.track]);
+            var outerSize=(axisIsX?box.w:box.h)+fs*2;
+            var next=entries[entryNo+1];
+            var boundary=next?Number(referenceStarts[next.track])-minimumGap:canvasAxis-margin;
+            if(!Number.isFinite(start)||start+outerSize>boundary+0.001){fitsReference=false;break;}
+          }
+          if(fitsReference){
+            entries.forEach(function(entry){
+              isolatedPositions[entry.index]=axisIsX
+                ? {x:referenceStarts[entry.track],y:crossStarts[groupIndex]}
+                : {x:crossStarts[groupIndex],y:referenceStarts[entry.track]};
+            });
+            return;
+          }
+          /* 이 행/열만 예외 처리한다. 다른 행/열의 좌표에는 영향을 주지 않는다. */
+          var count=entries.length;
+          var availableImageSum=canvasAxis-margin*2-count*fs*2-(count-1)*minimumGap;
+          var currentSizes=entries.map(function(entry){var b=itemBoxes[entry.index];return axisIsX?b.w:b.h;});
+          var currentSizeSum=sum(currentSizes);
+          if(currentSizeSum>availableImageSum+0.001){
+            var entryHigh=currentSizes.reduce(function(m,v){return Math.max(m,v);},1), entryLow=0;
+            function limitedEntrySum(limit){
+              var total=0;
+              for(var ei=0;ei<count;ei++){
+                var floor=Math.max(1,Number(protectedTracks[entries[ei].track])||1);
+                total+=Math.max(floor,Math.min(currentSizes[ei],limit));
+              }
+              return total;
+            }
+            for(var fitPass=0;fitPass<56;fitPass++){
+              var middle=(entryLow+entryHigh)/2;
+              if(limitedEntrySum(middle)<=availableImageSum) entryLow=middle;
+              else entryHigh=middle;
+            }
+            entries.forEach(function(entry,entryNo){
+              var floor=Math.max(1,Number(protectedTracks[entry.track])||1);
+              var limit=Math.max(floor,Math.min(currentSizes[entryNo],entryLow));
+              itemBoxes[entry.index]=scaleCompositeBox(itemBoxes[entry.index],limit/currentSizes[entryNo]);
+            });
+          }
+          var usedOuter=entries.reduce(function(total,entry){
+            var b=itemBoxes[entry.index]; return total+(axisIsX?b.w:b.h)+fs*2;
+          },0);
+          /* 예외 행/열의 남는 폭을 간격으로 재분배하지 않는다. 그렇게 하면
+             미리보기와 PPTX에서 와이드 행만 벌어져 보인다. 최소 가시 간격을
+             고정하고 행/열 묶음 전체를 중앙에 둔다. */
+          var localGap=count>1?minimumGap:0;
+          var cursor=Math.max(0,(canvasAxis-usedOuter-(count-1)*localGap)/2);
+          entries.forEach(function(entry){
+            isolatedPositions[entry.index]=axisIsX
+              ? {x:cursor,y:crossStarts[groupIndex]}
+              : {x:crossStarts[groupIndex],y:cursor};
+            var b=itemBoxes[entry.index]; cursor+=(axisIsX?b.w:b.h)+fs*2+localGap;
+          });
         });
-        colW=colW.map(function(v){return v*scale;}); rowH=rowH.map(function(v){return v*scale;});
-        margin*=scale; gap*=scale; fs*=scale;
-        sol=solveGridPlan(colW,rowH,gap,margin,targetRatio);
+        /* 페이지 캔버스와 정상 행/열의 기준 트랙은 첫 페이지 값을 그대로 사용한다. */
+        colW=capCols.slice(); rowH=capRows.slice();
+        sol={W:fixedTemplate.W,H:fixedTemplate.H,gx:referenceLayout.gx,gy:referenceLayout.gy,
+          center:!!referenceLayout.center,cropped:false,sx:referenceLayout.sx,sy:referenceLayout.sy};
+      }
+      /* 같은 그룹은 모든 페이지에서 하나의 캔버스와 PPTX 배율을 공유한다.
+         외곽 우선은 외곽을 고정하고 남는 폭/높이를 간격에 배분하며,
+         간격 우선은 간격을 고정하고 남는 공간을 대칭 외곽에 배분한다. */
+      if(usingSharedPlan && !cropResidual && !sharedPixelBasis.referenceLayout){
+        var template=sharedPixelBasis.template;
+        if(template){
+          var fixedW=template.W, fixedH=template.H;
+          /* 공통 시트는 모든 페이지를 선계산해 만든 것이므로 현재 페이지는
+             추가 축소 없이 들어가야 한다. 여기서 한 축만 줄이는 보정은
+             원본 비율을 파괴하므로 금지한다. */
+          var requiredW=sum(colW)+layoutCols*fs*2;
+          var requiredH=sum(rowH)+layoutRows*fs*2;
+          var fittedGx=layoutCols>1?(fixedW-margin*2-requiredW)/(layoutCols-1):gap;
+          var fittedGy=layoutRows>1?(fixedH-margin*2-requiredH)/(layoutRows-1):gap;
+          if(isGapRule){
+            fittedGx=gap; fittedGy=gap;
+            sol={W:fixedW,H:fixedH,gx:fittedGx,gy:fittedGy,center:true,cropped:false,
+              sx:(fixedW-requiredW-(layoutCols-1)*fittedGx)/2,
+              sy:(fixedH-requiredH-(layoutRows-1)*fittedGy)/2};
+          }else{
+            sol={W:fixedW,H:fixedH,gx:fittedGx,gy:fittedGy,center:false,cropped:false,sx:margin,sy:margin};
+          }
+          /* 첫 페이지가 이후 페이지의 모든 정상 행/열 좌표를 확정한다. */
+          var referenceColStarts=[], referenceRowStarts=[], refX=sol.sx, refY=sol.sy;
+          for(var refCol=0;refCol<layoutCols;refCol++){
+            referenceColStarts.push(refX); refX+=colW[refCol]+fs*2+sol.gx;
+          }
+          for(var refRow=0;refRow<layoutRows;refRow++){
+            referenceRowStarts.push(refY); refY+=rowH[refRow]+fs*2+sol.gy;
+          }
+          sharedPixelBasis.referenceLayout={
+            colW:colW.slice(),rowH:rowH.slice(),colStarts:referenceColStarts,rowStarts:referenceRowStarts,
+            gx:sol.gx,gy:sol.gy,sx:sol.sx,sy:sol.sy,center:!!sol.center
+          };
+        }
       }
       W=sol.W; H=sol.H; gx=sol.gx; gy=sol.gy; cropped=!!sol.cropped; center=!!sol.center;
-      pixelLayout={boxes:itemBoxes,colW:colW,rowH:rowH,sx:sol.sx,sy:sol.sy};
+      pixelLayout={boxes:itemBoxes,colW:colW,rowH:rowH,sx:sol.sx,sy:sol.sy,positions:isolatedPositions};
     }else{
       if(opt.fit==='pixel' && list.length){
         await ensureDim(list[0]);
         var cw0=Math.max(1,Number(list[0].width)||540), ch0=Math.max(1,Number(list[0].height)||Math.round(cw0/rawRatio(list[0])));
         var sol0=solveCanvas(layoutCols,layoutRows,cw0,ch0,gap,margin,targetRatio), sc0=canvasGuardScale(sol0.W,sol0.H);
-        if(sc0<1){ cw0*=sc0; ch0*=sc0; margin*=sc0; gap*=sc0; fs*=sc0; sol0=solveCanvas(layoutCols,layoutRows,cw0,ch0,gap,margin,targetRatio); }
+        if(sc0<1){
+          var sourceCw0=cw0, sourceCh0=ch0, fallbackScale=sc0;
+          for(var fallbackPass=0;fallbackPass<4;fallbackPass++){
+            cw0=sourceCw0*fallbackScale; ch0=sourceCh0*fallbackScale;
+            sol0=solveCanvas(layoutCols,layoutRows,cw0,ch0,gap,margin,targetRatio);
+            var fallbackCorrection=canvasGuardScale(sol0.W,sol0.H);
+            if(fallbackCorrection>=0.999999) break;
+            fallbackScale*=fallbackCorrection;
+          }
+        }
         W=sol0.W; H=sol0.H; gx=sol0.gx; gy=sol0.gy; cropped=!!sol0.cropped; center=!!sol0.center;
       }
     }
@@ -13102,15 +13422,16 @@ body.__sheet_processing #make.sheetBtn:focus{
         ctx.restore();
         return {x:boxX,y:boxY,w:boxW,h:boxH,mode:'inside',label:label,padX:padX,padY:padY,padTop:0,fontPx:fontPx};
       }
-      /* 바깥쪽 번호는 프레임과 정렬축은 유지하되, 맞닿는 축에만
-         한 줄 간격보다 작은 공통 여유를 둔다. */
-      var edgeGap=Math.max(2,Math.round(fontPx*.25));
+      /* PPTX의 8pt 텍스트 상자는 프레임 끝에서 시작하고 글꼴 자체의
+         상단 메트릭만큼만 잉크가 떨어진다. PNG도 별도 한 줄(1em)을
+         더하지 않고 같은 약 1/4em 시각 간격을 사용한다. */
+      var edgeGap=Math.max(1,Math.round(fontPx*.25));
       var padLeft=rect.side==='right'?edgeGap:0;
       var padTop=rect.side==='bottom'?edgeGap:0;
       ctx.fillStyle=canvasTextColor();
       ctx.fillText(label,rect.x+padLeft,rect.y+padTop+ascent);
       ctx.restore();
-      return {x:rect.x,y:rect.y,w:rect.w,h:rect.h,mode:'outside',label:label,padX:padLeft,padTop:padTop,fontPx:fontPx};
+      return {x:rect.x,y:rect.y,w:rect.w,h:rect.h,side:rect.side||'',mode:'outside',label:label,padX:padLeft,padTop:padTop,fontPx:fontPx};
     }
 
     var layoutW, layoutH, allW, allH, sx, sy;
@@ -13164,7 +13485,9 @@ body.__sheet_processing #make.sheetBtn:focus{
       if(row>=layoutRows || col>=layoutCols) continue;
       var x,y,cwCell,chCell,w,h,composite;
       if(pixelLayout){
-        x=colStart(col); y=rowStart(row); cwCell=pixelLayout.colW[col]; chCell=pixelLayout.rowH[row];
+        var fixedPosition=pixelLayout.positions&&pixelLayout.positions[i];
+        x=fixedPosition?fixedPosition.x:colStart(col); y=fixedPosition?fixedPosition.y:rowStart(row);
+        cwCell=pixelLayout.colW[col]; chCell=pixelLayout.rowH[row];
         composite=pixelLayout.boxes[i]; w=composite.imageW; h=composite.imageH;
       }else{
         var ar=rawRatio(it), box;
@@ -13193,7 +13516,7 @@ body.__sheet_processing #make.sheetBtn:focus{
       var drawX=Math.round(dx+fs), drawY=Math.round(dy+fs);
       var drawR=Math.round(dx+fs+w), drawB=Math.round(dy+fs+h);
       var drawW=Math.max(1,drawR-drawX), drawH=Math.max(1,drawB-drawY);
-      if(!textMarginEnabled){
+      if(!textMarginEnabled && !pixelLayout){
         var clamped=clampMinorOverflow(drawX,drawY,drawW,drawH); drawX=clamped.x; drawY=clamped.y; drawW=clamped.w; drawH=clamped.h;
       }
       var compContentR=Math.round(dx+fs+compW), compContentB=Math.round(dy+fs+compH);
@@ -13206,13 +13529,9 @@ body.__sheet_processing #make.sheetBtn:focus{
       var bw=textMarginEnabled?drawW:compContentW;
       var bh=textMarginEnabled?drawH:compContentH;
       if(E('frameOn')&&E('frameOn').checked&&fs>0){
-        /*
-         * 캔버스 가드가 전체 시트를 축소하면 fs도 3.94px처럼 소수가 된다.
-         * 프레임별 시작점과 크기를 따로 반올림하지 않고, 배치 계산의
-         * 바깥 시작·끝 경계를 각각 한 번만 반올림한다. gap=0인 인접 셀은
-         * 이전 셀의 끝과 다음 셀의 시작이 같은 수식의 같은 좌표가 되므로
-         * 1px 틈이나 겹침 없이 정확히 하나의 경계를 공유한다.
-        */
+        /* 프레임 두께는 최종 출력의 정수 픽셀 값으로 유지한다.
+           시작·끝 경계를 한 번씩만 반올림하므로 모든 컷의 네 변이
+           동일한 fs 두께를 갖고 인접 경계에도 틈이 생기지 않는다. */
         bx=Math.round(dx); by=Math.round(dy);
         /* 텍스트 여백에는 별도 외곽선을 두르지 않는다.
            프레임은 실제 컷까지만 그리고 그 끝선이 텍스트 영역과의 유일한 경계가 된다. */
@@ -13320,7 +13639,7 @@ body.__sheet_processing #make.sheetBtn:focus{
     var w=int1(gv('blankPxW',960),960), h=int1(gv('blankPxH',540),540), ratio='16:9';
     var cv=document.createElement('canvas'); cv.width=w; cv.height=h; var cx=cv.getContext('2d'); cx.fillStyle='#fff'; cx.fillRect(0,0,w,h); var src=cv.toDataURL('image/png');
     for(var i=0;i<count;i++) arr.push({type:'blank',ratio:ratio,file:{name:ratio+'_'+String(i+1).padStart(2,'0')+'.png'},src:src,selected:false,width:w,height:h,_ratio:16/9});
-    if(E('frameOn')) E('frameOn').checked=true; if(E('frameSize')){E('frameSize').value=gv('frameSize','6')||'6';E('frameSize').disabled=false;} if(E('frameGap')){ var savedGap=gv('frameGap',null); E('frameGap').value=(savedGap==null?'50':savedGap); }
+    if(E('frameOn')) E('frameOn').checked=true; if(E('frameSize')){E('frameSize').value=gv('frameSize','6')||'6';E('frameSize').disabled=false;} if(E('frameGap')){ var savedGap=gv('frameGap',null); E('frameGap').value=(savedGap==null?'100':savedGap); }
     if(typeof hideFrameSheetIntroThumb==='function') hideFrameSheetIntroThumb();
     return true;
   }
@@ -13439,21 +13758,39 @@ body.__sheet_processing #make.sheetBtn:focus{
       var data=A(); if(!data.length){ madeInitialBlanks=makeBlankForCurrentLayout(); data=A(); }
       if(!data.length){ if(pages) pages.classList.remove('dpc-generating-sheet'); return false; }
       for(var i=0;i<data.length;i++) await ensureDim(data[i]);
+      var gs=grouped(data,generationSelection), pageNo=1,total=0,globalCutNo=1;
+      /* 픽셀 크기의 유일한 기준은 입력 전체의 첫 컷이다. 비율 그룹이 바뀌어도
+         가로 배치는 이 높이, 세로 배치는 이 폭을 계속 사용한다. */
       var globalReferenceItem=data[0]||null;
       if(globalReferenceItem) await ensureDim(globalReferenceItem);
-      var gs=grouped(data,generationSelection), pageNo=1,total=0,globalCutNo=1;
+      var groupJobs=[];
+      /* 비율 그룹은 추천을 나누기 위한 분류일 뿐, 동일한 시트 규격의
+         프레임 크기를 다시 정하는 권한은 없다. 같은 시트·규격·방향은
+         최초 페이지에서 만든 픽셀 계획을 끝까지 공유한다. */
+      var sharedBasisByLayout=Object.create(null);
       for(var gi=0;gi<gs.length;gi++){
         var g=gs[gi], opt=g.opt||readOpt();
         var per=Math.max(1,(Math.max(1,opt.c||1)*Math.max(1,opt.r||1)));
         var pageLists=[];
         for(var ps=0;ps<g.list.length;ps+=per) pageLists.push(g.list.slice(ps,ps+per));
-        /* 같은 규격 그룹의 모든 페이지를 먼저 측정하고 열·행 크기를 한 번만 확정한다.
-           실제 컷 비율이나 페이지별 캔버스 가드 때문에 후반 페이지가 작아지지 않는다. */
-        var sharedPlan=await sharedPixelPlanForPages(pageLists,opt,globalReferenceItem);
-        for(var pg=0;pg<pageLists.length;pg++){
-          var pageList=pageLists[pg];
+        var actualPageSize=pageSize(opt);
+        var actualPageRatio=(actualPageSize[0]/actualPageSize[1]).toFixed(6);
+        /* 추천 그룹의 비율 표기가 달라도 실제 시트·규격·방향이 같으면
+           최초 페이지의 공통 템플릿을 그대로 사용한다. */
+        var basisKey=[opt.fit,Number(opt.c)||1,Number(opt.r)||1,opt.flow,actualPageRatio].join('|');
+        var sharedBasis=sharedBasisByLayout[basisKey]||null;
+        if(!sharedBasis){
+          sharedBasis=await sharedPixelBasisForGroup(pageLists,opt,globalReferenceItem);
+          if(sharedBasis) sharedBasisByLayout[basisKey]=sharedBasis;
+        }
+        groupJobs.push({opt:opt,pageLists:pageLists,sharedBasis:sharedBasis});
+      }
+      for(var gji=0;gji<groupJobs.length;gji++){
+        var job=groupJobs[gji];
+        for(var pg=0;pg<job.pageLists.length;pg++){
+          var pageList=job.pageLists[pg];
           total++;
-          await drawPage(pageList,opt,pageNo++,globalCutNo,globalReferenceItem,sharedPlan);
+          await drawPage(pageList,job.opt,pageNo++,globalCutNo,globalReferenceItem,job.sharedBasis);
           globalCutNo+=pageList.length;
         }
       }
@@ -15157,6 +15494,7 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
   'use strict';
   var PPTXGEN_URL='https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.min.js';
   var JSZIP_URL='https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+  /* 원본 PNG/JPEG 바이트와 픽셀 해상도를 그대로 보존한다. */
   var imageDataCache=new WeakMap();
   function E(id){return document.getElementById(id);}
   function ready(fn){document.readyState==='loading'?document.addEventListener('DOMContentLoaded',fn,{once:true}):fn();}
@@ -15210,10 +15548,13 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
     var mime=String(blob&&blob.type||'').toLowerCase();
     var ext=(String(name||'').match(/\.([a-z0-9]+)$/i)||[])[1];
     ext=String(ext||'').toLowerCase();
-    return /^(image\/(png|jpe?g|gif))$/.test(mime)||/^(png|jpe?g|gif)$/.test(ext);
+    /* PNG/JPEG는 원본 바이트를 그대로 넣고, GIF 등만 같은 픽셀 크기의
+       PNG로 변환한다. 해상도 기준은 문서 presProps가 단일 관리한다. */
+    return /^(image\/(png|jpe?g))$/.test(mime)||/^(png|jpe?g)$/.test(ext);
   }
   async function itemImageData(item){
-    if(item&&typeof item==='object'&&imageDataCache.has(item)) return imageDataCache.get(item);
+    var cached=item&&typeof item==='object'?imageDataCache.get(item):null;
+    if(cached) return cached;
     var promise=(async function(){
       var original=item&&item.originalFile instanceof Blob?item.originalFile:null;
       var current=item&&item.file instanceof Blob?item.file:null;
@@ -15223,7 +15564,11 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
         return directPptMime(blob,name)?await readBlob(blob):await convertBlobToPng(blob);
       }
       var src=String(item&&item.src||'');
-      if(/^data:image\//i.test(src)) return src;
+      if(/^data:image\//i.test(src)){
+        if(/^data:image\/(png|jpe?g)/i.test(src)) return src;
+        var srcBlob=await fetch(src).then(function(r){return r.blob();});
+        return await convertBlobToPng(srcBlob);
+      }
       if(src){
         var fetched=await fetch(src).then(function(r){if(!r.ok) throw new Error('이미지를 읽을 수 없습니다.');return r.blob();});
         return directPptMime(fetched,'')?await readBlob(fetched):await convertBlobToPng(fetched);
@@ -15268,10 +15613,12 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
   function patchPictureFrames(xml){
     return xml.replace(/<p:pic>[\s\S]*?<\/p:pic>/g,function(pic){
       var marker=pic.match(/name="DPC_FRAME_([0-9]+)_([^"]*)"/);
-      if(!marker) return pic;
-      var lineWidth=Math.max(1,parseInt(marker[1],10)||1);
-      pic=pic.replace(marker[0],'name="'+marker[2]+'"');
-      return pic.replace('</p:spPr>','<a:ln w="'+lineWidth+'"><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:prstDash val="solid"/></a:ln></p:spPr>');
+      if(marker){
+        var lineWidth=Math.max(1,parseInt(marker[1],10)||1);
+        pic=pic.replace(marker[0],'name="'+marker[2]+'"');
+        pic=pic.replace('</p:spPr>','<a:ln w="'+lineWidth+'"><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:prstDash val="solid"/></a:ln></p:spPr>');
+      }
+      return pic;
     });
   }
   function patchTextDefaults(xml){
@@ -15303,13 +15650,19 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
     var pages=E('pages'); if(!pages) return [];
     return Array.prototype.map.call(pages.querySelectorAll('.page'),function(page){return page.__dpcPptPage;}).filter(Boolean);
   }
-  function downloadBlob(blob,name){
+  async function downloadBlob(blob,name){
+    if(typeof window.dpcSaveBlob==='function') return window.dpcSaveBlob(blob,name);
     var url=URL.createObjectURL(blob), a=document.createElement('a');
     a.href=url; a.download=name; a.style.display='none'; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function(){URL.revokeObjectURL(url);},30000);
   }
   function rectInches(rect,sx,sy,scale){
-    return {x:sx+rect.x*scale,y:sy+rect.y*scale,w:Math.max(.001,rect.w*scale),h:Math.max(.001,rect.h*scale)};
+    /* 캔버스의 정수 픽셀 경계를 PPTX EMU 경계로 각각 한 번만 변환한다.
+       위치와 크기를 따로 반올림해서 생기는 미세한 틈을 막는다. */
+    var emu=914400;
+    var x1=Math.round((sx+rect.x*scale)*emu), y1=Math.round((sy+rect.y*scale)*emu);
+    var x2=Math.round((sx+(rect.x+rect.w)*scale)*emu), y2=Math.round((sy+(rect.y+rect.h)*scale)*emu);
+    return {x:x1/emu,y:y1/emu,w:Math.max(1,x2-x1)/emu,h:Math.max(1,y2-y1)/emu};
   }
   async function exportPptx(){
     var records=pageRecords();
@@ -15352,6 +15705,8 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
           var placement=rec.placements[ii], item=placement.item||{};
           var itemName=String(item.file&&item.file.name||('CUT_'+String(ii+1).padStart(3,'0')));
           var ir=rectInches(placement.image,sx,sy,scale);
+          await ensureDim(item);
+          /* 원본 픽셀과 바이트는 재표본화하지 않고 그대로 넣는다. */
           var data=await itemImageData(item);
           var imageObjectName='CUT '+String(ii+1).padStart(3,'0');
           if(placement.frame){
@@ -15380,14 +15735,22 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
             }else{
               textRuns=[{text:'\u200B',options:{fontFace:PPT_FONT_FACE,fontSize:pptFontSize,color:textColor,lang:'ko-KR',bold:true}}];
             }
-            /* PptxGenJS 일반 텍스트 margin 배열은 [좌, 우, 하, 상] pt 단위다.
-               캔버스 좌표를 inch로 바꾼 뒤 72를 곱해 pt로 통일한다. */
-            var outsideLeftPt=(placement.number&&placement.number.mode==='outside')?Math.max(0,(Number(placement.number.padX)||0)*scale*72):0;
-            var outsideTopPt=(placement.number&&placement.number.mode==='outside')?Math.max(0,(Number(placement.number.padTop)||0)*scale*72):0;
+            /* 프레임과 글자 사이에는 한 줄 전체가 아니라 글꼴 메트릭 수준의
+               약 1/4em만 둔다. 하단은 텍스트 상자 자체를 프레임 끝에서 시작하면
+               PowerPoint의 상단 메트릭이 이 간격을 만든다. */
+            var outsideSide=(placement.number&&placement.number.mode==='outside')?(placement.number.side||placement.text.side||''):'';
+            var outsideGapPt=(placement.number&&placement.number.mode==='outside')
+              ? Math.max(0,(Number(placement.number.fontPx)||0)*scale*72*.25)
+              : 0;
+            if(!outsideGapPt && placement.number&&placement.number.mode==='outside') outsideGapPt=textEntryFontSize*.25;
+            var outsideLeftPt=outsideSide==='right'?outsideGapPt:0;
+            var outsideTopPt=0;
+            var textBoxY=tr.y;
             /* 실제 텍스트 도형은 한 줄 높이로 시작하고 입력량에 따라 아래로 확장한다.
                예약된 텍스트 영역의 가로 폭과 시작점은 그대로 유지한다. */
             var oneLineHeight=Math.max(.001,Math.min(tr.h,(outsideTopPt+textEntryFontSize*1.25+1)/72));
-            slide.addText(textRuns,{x:tr.x,y:tr.y,w:tr.w,h:oneLineHeight,margin:[outsideLeftPt,0,0,outsideTopPt],fontFace:PPT_FONT_FACE,fontSize:textEntryFontSize,bold:true,color:textColor,lang:'ko-KR',valign:'top',breakLine:false,fit:'resize',fill:{color:'FFFFFF',transparency:100},line:{color:'FFFFFF',transparency:100},altText:'TEXT '+itemName,objectName:'DPC_TEXT_'+textName});
+            /* PptxGenJS margin 배열 순서는 [상, 우, 하, 좌]다. */
+            slide.addText(textRuns,{x:tr.x,y:textBoxY,w:tr.w,h:oneLineHeight,margin:[outsideTopPt,0,0,outsideLeftPt],fontFace:PPT_FONT_FACE,fontSize:textEntryFontSize,bold:true,color:textColor,lang:'ko-KR',valign:'top',breakLine:false,fit:'resize',fill:{color:'FFFFFF',transparency:100},line:{color:'FFFFFF',transparency:100},altText:'TEXT '+itemName,objectName:'DPC_TEXT_'+textName});
           }
           if(placement.number&&placement.number.mode==='inside'){
             var nr=rectInches(placement.number,sx,sy,scale);
@@ -15395,14 +15758,14 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
             var insideFontSize=8;
             var insidePadXPt=Math.max(0,(Number(placement.number.padX)||0)*scale*72);
             var insidePadYPt=Math.max(0,(Number(placement.number.padY)||0)*scale*72);
-            slide.addText([{text:placement.number.label,options:{fontFace:PPT_FONT_FACE,fontSize:insideFontSize,color:'FFFFFF',lang:'ko-KR',bold:true}}],{x:nr.x,y:nr.y,w:nr.w,h:nr.h,margin:[insidePadXPt,insidePadXPt,insidePadYPt,insidePadYPt],fontFace:PPT_FONT_FACE,fontSize:insideFontSize,bold:true,color:'FFFFFF',lang:'ko-KR',valign:'mid',breakLine:false,fill:{color:'000000',transparency:45},line:{color:'000000',transparency:100},altText:'NUMBER '+itemName,objectName:'DPC_TEXT_'+numberName});
+            slide.addText([{text:placement.number.label,options:{fontFace:PPT_FONT_FACE,fontSize:insideFontSize,color:'FFFFFF',lang:'ko-KR',bold:true}}],{x:nr.x,y:nr.y,w:nr.w,h:nr.h,margin:[insidePadYPt,insidePadXPt,insidePadYPt,insidePadXPt],fontFace:PPT_FONT_FACE,fontSize:insideFontSize,bold:true,color:'FFFFFF',lang:'ko-KR',valign:'mid',breakLine:false,fill:{color:'000000',transparency:45},line:{color:'000000',transparency:100},altText:'NUMBER '+itemName,objectName:'DPC_TEXT_'+numberName});
           }
         }
       }
       var out=await pptx.write({outputType:'blob',compression:false});
       if(!(out instanceof Blob)) out=new Blob([out],{type:'application/vnd.openxmlformats-officedocument.presentationml.presentation'});
       out=await normalizePptx(out,JSZip);
-      downloadBlob(out,fileStem()+'.pptx');
+      await downloadBlob(out,fileStem()+'.pptx');
       try{if(typeof window.gtag==='function') window.gtag('event','sheet_save_pptx',{tool_name:'frame_sheet',page_count:records.length});}catch(_e){}
     }catch(err){
       console.error(err);
@@ -15412,6 +15775,129 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
     }
   }
   ready(function(){var btn=E('savePptx');if(btn&&!btn.__dpcPptxBound){btn.addEventListener('click',exportPptx);btn.__dpcPptxBound=true;}});
+})();
+</script>
+<style id="dpc-cut-sheet-transfer-style-v1">
+.dpc-app-transfer-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex:0 0 auto;white-space:nowrap}
+.dpc-app-transfer-target,.dpc-app-transfer-arrow{display:none!important}
+body.__sheet_transfer_ready .dpc-app-transfer-target{display:inline-flex!important}
+body.__sheet_transfer_ready .dpc-app-transfer-arrow{display:inline-flex!important}
+.dpc-app-transfer-target{
+  min-width:82px!important;height:var(--dp-polish-btn-h,42px)!important;padding:0 12px!important;
+  align-items:center!important;justify-content:center!important;border:1px solid #d2d2d2!important;
+  border-radius:var(--dp-polish-btn-r,8px)!important;background:#fff!important;color:#222!important;
+  font:700 16px/1 'Noto Sans KR',sans-serif!important;box-shadow:none!important
+}
+.dpc-app-transfer-target:hover,.dpc-app-transfer-target:focus{background:#f3f3f3!important;border-color:#c6c6c6!important;color:#222!important}
+.dpc-app-transfer-target:active{background:#e7e7e7!important}
+.dpc-app-transfer-target[disabled]{opacity:.58!important;cursor:wait!important}
+.dpc-app-transfer-arrow{align-items:center;justify-content:center;color:#9a9a9a;font-size:17px;line-height:1;pointer-events:none}
+.dpc-transfer-status{
+  position:fixed;top:14px;left:50%;z-index:99999;transform:translateX(-50%);padding:9px 13px;
+  border:1px solid #d8d8d8;border-radius:9px;background:rgba(255,255,255,.97);color:#222;
+  box-shadow:0 5px 18px rgba(0,0,0,.12);font:600 13px/1.35 'Noto Sans KR',sans-serif;white-space:nowrap
+}
+@media(max-width:430px){
+  .dpc-app-transfer-actions{gap:6px}
+  .dpc-app-transfer-target{min-width:82px!important;height:var(--dp-polish-btn-h,38px)!important;padding:0 10px!important;font-size:16px!important}
+  .dpc-app-transfer-arrow{font-size:16px}
+}
+</style>
+<script id="dpc-cut-sheet-transfer-v1">
+(function(){
+'use strict';
+var PROTOCOL='DPC_APP_TRANSFER_V1';
+var CUT_ORIGIN='https://cut.entercredit.kr';
+var SHEET_ORIGIN='https://sheet.entercredit.kr';
+var incoming=new Map();
+
+function status(text){
+  var el=document.getElementById('dpcTransferStatus');
+  if(!text){if(el)el.remove();return;}
+  if(!el){el=document.createElement('div');el.id='dpcTransferStatus';el.className='dpc-transfer-status';document.body.appendChild(el);}
+  el.textContent=text;
+}
+function uid(){return (window.crypto&&window.crypto.randomUUID)?window.crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2);}
+function waitFor(test,timeout){return new Promise(function(resolve,reject){var start=Date.now();(function poll(){if(test())return resolve();if(Date.now()-start>timeout)return reject(new Error('timeout'));setTimeout(poll,80);})();});}
+function canvasBlob(canvas){return new Promise(function(resolve,reject){canvas.toBlob(function(blob){blob?resolve(blob):reject(new Error('sheet-blob-failed'));},'image/png');});}
+async function collectSheetFiles(){
+  var canvases=Array.from(document.querySelectorAll('#pages canvas'));
+  var prefixNode=document.getElementById('prefix');
+  var base=String(prefixNode&&prefixNode.value||'sheet').trim()||'sheet';
+  var out=[];
+  for(var i=0;i<canvases.length;i++)out.push({name:base+'_'+String(i+1).padStart(3,'0')+'.png',blob:await canvasBlob(canvases[i])});
+  return out;
+}
+async function sendFiles(targetRole,records,button,target,transferId){
+  if(!records.length){try{target.close();}catch(_e){}alert('먼저 시트를 생성하세요.');return;}
+  var targetOrigin=targetRole==='cut'?CUT_ORIGIN:SHEET_ORIGIN;
+  if(!target){alert('새 탭 열기가 차단되었습니다. 팝업을 허용한 뒤 다시 시도해 주세요.');return;}
+  var ready=false,done=false,failed='';
+  function receive(event){
+    if(event.origin!==targetOrigin||event.source!==target||!event.data||event.data.protocol!==PROTOCOL||event.data.id!==transferId)return;
+    if(event.data.type==='READY')ready=true;
+    if(event.data.type==='ACK'){done=true;failed=event.data.error||'';}
+  }
+  window.addEventListener('message',receive);
+  var ping=setInterval(function(){try{target.postMessage({protocol:PROTOCOL,type:'PING',id:transferId,from:'sheet'},targetOrigin);}catch(_e){}},220);
+  try{
+    await waitFor(function(){return ready;},15000);
+    clearInterval(ping);
+    target.postMessage({protocol:PROTOCOL,type:'BEGIN',id:transferId,from:'sheet',total:records.length},targetOrigin);
+    for(var start=0;start<records.length;start+=4){
+      var chunk=records.slice(start,start+4);
+      var items=[];
+      for(var j=0;j<chunk.length;j++)items.push({name:chunk[j].name,type:chunk[j].blob.type||'image/png',buffer:await chunk[j].blob.arrayBuffer()});
+      target.postMessage({protocol:PROTOCOL,type:'BATCH',id:transferId,from:'sheet',items:items},targetOrigin,items.map(function(v){return v.buffer;}));
+    }
+    target.postMessage({protocol:PROTOCOL,type:'END',id:transferId,from:'sheet'},targetOrigin);
+    await waitFor(function(){return done;},60000);
+    if(failed)throw new Error(failed);
+    try{target.focus();}catch(_e){}
+  }finally{
+    clearInterval(ping);window.removeEventListener('message',receive);
+    if(button){button.disabled=false;button.textContent='CUT';}
+  }
+}
+async function ingestSheet(files){
+  if(typeof window.dpcProcessSheetFiles==='function'){await window.dpcProcessSheetFiles(files);return;}
+  if(typeof dpcProcessSheetFiles==='function'){await dpcProcessSheetFiles(files);return;}
+  var input=document.getElementById('files');if(!input)throw new Error('SHEET 파일 입력을 찾을 수 없습니다.');
+  var dt=new DataTransfer();files.forEach(function(file){dt.items.add(file);});input.files=dt.files;input.dispatchEvent(new Event('change',{bubbles:true}));
+}
+window.addEventListener('message',async function(event){
+  if(event.origin!==CUT_ORIGIN||!event.data||event.data.protocol!==PROTOCOL)return;
+  var data=event.data;
+  if(data.type==='PING'){event.source.postMessage({protocol:PROTOCOL,type:'READY',id:data.id},event.origin);return;}
+  if(data.type==='BEGIN'){
+    incoming.set(data.id,{source:event.source,origin:event.origin,total:Number(data.total)||0,files:[]});
+    status('CUT에서 가져오는 중… 0/'+(Number(data.total)||0));return;
+  }
+  var job=incoming.get(data.id);if(!job||job.source!==event.source)return;
+  if(data.type==='BATCH'){
+    (data.items||[]).forEach(function(item){job.files.push(new File([item.buffer],item.name||'cut.png',{type:item.type||'image/png'}));});
+    status('CUT에서 가져오는 중… '+job.files.length+'/'+job.total);return;
+  }
+  if(data.type==='END'){
+    try{await ingestSheet(job.files);event.source.postMessage({protocol:PROTOCOL,type:'ACK',id:data.id},event.origin);status('CUT 결과를 SHEET에 추가했습니다.');setTimeout(function(){status('');},1400);}
+    catch(error){event.source.postMessage({protocol:PROTOCOL,type:'ACK',id:data.id,error:String(error&&error.message||error)},event.origin);status('가져오기에 실패했습니다.');setTimeout(function(){status('');},2200);}
+    incoming.delete(data.id);
+  }
+});
+function syncReady(){document.body.classList.toggle('__sheet_transfer_ready',!!document.querySelector('#pages canvas'));}
+function bind(){
+  var pages=document.getElementById('pages');if(pages){new MutationObserver(syncReady).observe(pages,{childList:true,subtree:true});syncReady();}
+  var btn=document.getElementById('sheetToCutBtn');if(!btn||btn.__dpcBound)return;btn.__dpcBound=true;
+  btn.addEventListener('click',async function(){
+    if(btn.disabled)return;btn.disabled=true;btn.textContent='…';
+    var transferId=uid();
+    var target=window.open(CUT_ORIGIN+'/#dpc-transfer='+encodeURIComponent(transferId)+'&from=sheet','dpc_cut_receiver');
+    if(!target){alert('새 탭 열기가 차단되었습니다. 팝업을 허용한 뒤 다시 시도해 주세요.');btn.disabled=false;btn.textContent='CUT';return;}
+    try{var files=await collectSheetFiles();await sendFiles('cut',files,btn,target,transferId);}
+    catch(error){console.error(error);alert('CUT 전송에 실패했습니다. 다시 시도해 주세요.');btn.disabled=false;btn.textContent='CUT';}
+  });
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind);else bind();
 })();
 </script>
 </body>
