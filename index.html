@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- BUILD V71: recalculate spacing from actual item count and visible page capacity even when sheet ratio is locked. -->
 <html lang="ko">
 <head>
 <meta charset="utf-8">
@@ -3420,8 +3421,8 @@ body.dpc-tools-open .dpc-tools-panel{display:block}
     <button id="addBlank">프레임</button><span id="lastFrameRatioBadge" class="last-frame-ratio-badge">16:9</span>
   </div>
   <div class="dpc-app-transfer-actions" aria-label="SHEET 실행 및 CUT 연동">
-    <button id="sheetToCutBtn" class="dpc-app-transfer-target" type="button" aria-label="현재 SHEET 결과를 CUT에 추가">CUT</button>
-    <span class="dpc-app-transfer-arrow" aria-hidden="true">←</span>
+    <button id="sheetToCutBtn" class="dpc-app-transfer-target" type="button" aria-label="현재 SHEET 결과를 CUT에 추가" style="display:none">CUT</button>
+    <span class="dpc-app-transfer-arrow" aria-hidden="true" style="display:none">←</span>
     <button id="make" class="sheetBtn" disabled aria-busy="true">SHEET</button>
   </div>
 </div>
@@ -9516,7 +9517,16 @@ function recommend(request){
      btn.textContent='선택 ▼';
    }
  }
- const pageSpacing=recommendedSheetSpacing(n,c,r,isUltra);
+ /* 규격을 보존하는 연동 추천에서는 추천표가 산출한 c/r가 아니라
+    사용자가 실제로 선택한 페이지 규격으로 외곽·간격을 계산한다.
+    전체 컷 수와 페이지 수용량을 분리해야 21컷의 5x5(150) -> 5x4(100)가 된다. */
+ const requestedSpacingCount=linked?parseInt(request.spacingCountOverride,10):0;
+ const requestedSpacingCols=linked?parseInt(request.spacingCols,10):0;
+ const requestedSpacingRows=linked?parseInt(request.spacingRows,10):0;
+ const spacingCount=requestedSpacingCount>0?requestedSpacingCount:n;
+ const spacingCols=preserveLayout&&requestedSpacingCols>0?requestedSpacingCols:c;
+ const spacingRows=preserveLayout&&requestedSpacingRows>0?requestedSpacingRows:r;
+ const pageSpacing=recommendedSheetSpacing(spacingCount,spacingCols,spacingRows,isUltra);
  document.getElementById('margin').value=pageSpacing;
  document.getElementById('frameGap').value=pageSpacing;
  syncFrameSheetOptionLabels();
@@ -10661,6 +10671,11 @@ render=function(options){
     var c=positiveValue('colsInput'), r=positiveValue('rowsInput');
     return c&&r?Math.max(1,Math.round(c*r)):0;
   }
+  function currentActualItemCount(c,r){
+    var list=(typeof items!=='undefined'&&Array.isArray(items))?items:[];
+    if(list.length) return list.length;
+    return Math.max(1,Math.round((c||1)*(r||1)));
+  }
   window.currentSheetRecommendationCount=currentRecommendationCount;
   function syncRecommendationFromRatio(ev){
     clearTimeout(linkedRatioTimer);
@@ -10680,19 +10695,23 @@ render=function(options){
     markLayoutManual();
     var c=positiveValue('colsInput'), r=positiveValue('rowsInput');
     if(!c || !r) return;
-    /* 비율이 고정돼도 OFF 복원 기준은 즉시 갱신한다. */
+    /* 비율 고정은 비율 변경만 막는다. 페이지 규격이 바뀌면
+       외곽·간격은 현재 수용량 기준으로 항상 다시 계산해야 한다. */
     syncTextMarginBaseFromVisible(c,r);
-    if(isSheetRatioLocked()) return;
     var delay=ev&&ev.type==='input'?140:0;
     linkedLayoutTimer=setTimeout(function(){
       /* 지연 중 두 입력값이 바뀔 수 있으므로 실행 시점의 완성된 값을 다시 읽는다. */
       var currentC=positiveValue('colsInput'), currentR=positiveValue('rowsInput');
       if(!currentC||!currentR) return;
-      var recommendationCount=syncTextMarginBaseFromVisible(currentC,currentR);
+      syncTextMarginBaseFromVisible(currentC,currentR);
       if(typeof recommend==='function') recommend({
         __sheetLinkedRecommendation:true,
         preserveLayout:true,
-        countOverride:recommendationCount
+        preserveRatio:isSheetRatioLocked(),
+        countOverride:currentRecommendationCount(),
+        spacingCountOverride:currentActualItemCount(currentC,currentR),
+        spacingCols:currentC,
+        spacingRows:currentR
       });
     },delay);
   }
@@ -13091,9 +13110,14 @@ body.__sheet_processing #make.sheetBtn:focus{
         }
         var legacyW=isGapRule?Math.ceil(w):Math.ceil(w+1);
         var legacyH=isGapRule?Math.ceil(h):Math.ceil(h+1);
-        sx=Math.max(outer,(legacyW-(cwTotal+(colW.length-1)*gX))/2);
-        sy=Math.max(outer,(legacyH-(rhTotal+(rowH.length-1)*gY))/2);
-        return {W:legacyW,H:legacyH,gx:gX,gy:gY,center:true,cropped:false,sx:sx,sy:sy};
+        if(isGapRule){
+          sx=(legacyW-(cwTotal+(colW.length-1)*gX))/2;
+          sy=(legacyH-(rhTotal+(rowH.length-1)*gY))/2;
+          return {W:legacyW,H:legacyH,gx:gX,gy:gY,center:true,cropped:false,sx:sx,sy:sy};
+        }
+        /* 외곽 우선은 빈 프레임과 일반 이미지가 같은 시작 좌표를 쓴다.
+           시트 비율 때문에 늘어난 공간을 중앙 외곽으로 재분배하지 않는다. */
+        return {W:legacyW,H:legacyH,gx:gX,gy:gY,center:false,cropped:false,sx:outer,sy:outer};
       }
       /* 하나의 레이아웃 계획이 캔버스·간격·시작 좌표를 모두 확정한다.
          간격 우선은 gap을 고정하고 남는 외곽을 대칭 배분한다. */
@@ -13238,7 +13262,6 @@ body.__sheet_processing #make.sheetBtn:focus{
         var groupCount=axisIsX?layoutRows:layoutCols;
         var referenceStarts=axisIsX?referenceLayout.colStarts:referenceLayout.rowStarts;
         var crossStarts=axisIsX?referenceLayout.rowStarts:referenceLayout.colStarts;
-        var protectedTracks=axisIsX?capCols:capRows;
         var canvasAxis=axisIsX?fixedTemplate.W:fixedTemplate.H;
         /* 예외 행/열은 정상 행의 좌표를 건드리지 않은 채 자체적으로만 맞춘다.
            사용자가 정한 간격이 넉넉하면 프레임 두께만큼의 가시 간격까지 줄이고,
@@ -13246,80 +13269,36 @@ body.__sheet_processing #make.sheetBtn:focus{
            사용자가 명시한 값이므로 그대로 존중한다. */
         var configuredGap=Math.max(-fs,Number(gap)||0);
         var minimumGap=configuredGap>0?Math.min(configuredGap,Math.max(1,fs)):configuredGap;
-        var groups=new Array(groupCount).fill(0).map(function(){return [];});
         isolatedPositions=new Array(itemBoxes.length);
-        for(var groupItem=0;groupItem<itemBoxes.length;groupItem++){
-          var groupAt=posForIndex(groupItem);
-          var groupIndex=axisIsX?groupAt.row:groupAt.col;
-          var trackIndex=axisIsX?groupAt.col:groupAt.row;
-          if(groupIndex<groupCount) groups[groupIndex].push({index:groupItem,track:trackIndex});
-        }
         function scaleCompositeBox(box,factor){
           if(factor>=0.999999) return box;
           return {w:box.w*factor,h:box.h*factor,imageW:box.imageW*factor,imageH:box.imageH*factor,
             side:box.side,band:box.band*factor,separator:fs};
         }
-        groups.forEach(function(entries,groupIndex){
-          if(!entries.length) return;
-          entries.sort(function(a,b){return a.track-b.track;});
-          var fitsReference=true;
-          for(var entryNo=0;entryNo<entries.length;entryNo++){
-            var entry=entries[entryNo], box=itemBoxes[entry.index];
-            var start=Number(referenceStarts[entry.track]);
-            var outerSize=(axisIsX?box.w:box.h)+fs*2;
-            var next=entries[entryNo+1];
-            var boundary=next?Number(referenceStarts[next.track])-minimumGap:canvasAxis-margin;
-            if(!Number.isFinite(start)||start+outerSize>boundary+0.001){fitsReference=false;break;}
+        /* 두 번째 페이지부터도 모든 정상 컷은 첫 페이지의 슬롯 시작 좌표를
+           그대로 쓴다. 한 컷이 슬롯과 최소 간격을 넘을 때만 그 컷 하나를
+           등비 축소한다. 열/행 전체를 최소 간격으로 다시 묶거나 중앙 정렬하지 않는다. */
+        for(var isolatedIndex=0;isolatedIndex<itemBoxes.length;isolatedIndex++){
+          var isolatedAt=posForIndex(isolatedIndex);
+          var isolatedGroup=axisIsX?isolatedAt.row:isolatedAt.col;
+          var isolatedTrack=axisIsX?isolatedAt.col:isolatedAt.row;
+          if(isolatedGroup>=groupCount) continue;
+          var isolatedStart=Number(referenceStarts[isolatedTrack]);
+          var isolatedCross=Number(crossStarts[isolatedGroup]);
+          if(!Number.isFinite(isolatedStart)||!Number.isFinite(isolatedCross)) continue;
+          var nextReference=isolatedTrack+1<referenceStarts.length
+            ? Number(referenceStarts[isolatedTrack+1])-minimumGap
+            : canvasAxis-margin;
+          var availableContent=Math.max(1,nextReference-isolatedStart-fs*2);
+          var isolatedBox=itemBoxes[isolatedIndex];
+          var contentSize=axisIsX?isolatedBox.w:isolatedBox.h;
+          if(contentSize>availableContent+0.001){
+            itemBoxes[isolatedIndex]=scaleCompositeBox(isolatedBox,availableContent/contentSize);
           }
-          if(fitsReference){
-            entries.forEach(function(entry){
-              isolatedPositions[entry.index]=axisIsX
-                ? {x:referenceStarts[entry.track],y:crossStarts[groupIndex]}
-                : {x:crossStarts[groupIndex],y:referenceStarts[entry.track]};
-            });
-            return;
-          }
-          /* 이 행/열만 예외 처리한다. 다른 행/열의 좌표에는 영향을 주지 않는다. */
-          var count=entries.length;
-          var availableImageSum=canvasAxis-margin*2-count*fs*2-(count-1)*minimumGap;
-          var currentSizes=entries.map(function(entry){var b=itemBoxes[entry.index];return axisIsX?b.w:b.h;});
-          var currentSizeSum=sum(currentSizes);
-          if(currentSizeSum>availableImageSum+0.001){
-            var entryHigh=currentSizes.reduce(function(m,v){return Math.max(m,v);},1), entryLow=0;
-            function limitedEntrySum(limit){
-              var total=0;
-              for(var ei=0;ei<count;ei++){
-                var floor=Math.max(1,Number(protectedTracks[entries[ei].track])||1);
-                total+=Math.max(floor,Math.min(currentSizes[ei],limit));
-              }
-              return total;
-            }
-            for(var fitPass=0;fitPass<56;fitPass++){
-              var middle=(entryLow+entryHigh)/2;
-              if(limitedEntrySum(middle)<=availableImageSum) entryLow=middle;
-              else entryHigh=middle;
-            }
-            entries.forEach(function(entry,entryNo){
-              var floor=Math.max(1,Number(protectedTracks[entry.track])||1);
-              var limit=Math.max(floor,Math.min(currentSizes[entryNo],entryLow));
-              itemBoxes[entry.index]=scaleCompositeBox(itemBoxes[entry.index],limit/currentSizes[entryNo]);
-            });
-          }
-          var usedOuter=entries.reduce(function(total,entry){
-            var b=itemBoxes[entry.index]; return total+(axisIsX?b.w:b.h)+fs*2;
-          },0);
-          /* 예외 행/열의 남는 폭을 간격으로 재분배하지 않는다. 그렇게 하면
-             미리보기와 PPTX에서 와이드 행만 벌어져 보인다. 최소 가시 간격을
-             고정하고 행/열 묶음 전체를 중앙에 둔다. */
-          var localGap=count>1?minimumGap:0;
-          var cursor=Math.max(0,(canvasAxis-usedOuter-(count-1)*localGap)/2);
-          entries.forEach(function(entry){
-            isolatedPositions[entry.index]=axisIsX
-              ? {x:cursor,y:crossStarts[groupIndex]}
-              : {x:crossStarts[groupIndex],y:cursor};
-            var b=itemBoxes[entry.index]; cursor+=(axisIsX?b.w:b.h)+fs*2+localGap;
-          });
-        });
+          isolatedPositions[isolatedIndex]=axisIsX
+            ? {x:isolatedStart,y:isolatedCross}
+            : {x:isolatedCross,y:isolatedStart};
+        }
         /* 페이지 캔버스와 정상 행/열의 기준 트랙은 첫 페이지 값을 그대로 사용한다. */
         colW=capCols.slice(); rowH=capRows.slice();
         sol={W:fixedTemplate.W,H:fixedTemplate.H,gx:referenceLayout.gx,gy:referenceLayout.gy,
@@ -15493,7 +15472,6 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
 (function(){
   'use strict';
   var PPTXGEN_URL='https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.min.js';
-  var JSZIP_URL='https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
   /* 원본 PNG/JPEG 바이트와 픽셀 해상도를 그대로 보존한다. */
   var imageDataCache=new WeakMap();
   function E(id){return document.getElementById(id);}
@@ -15591,61 +15569,7 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
     }).catch(function(err){window.__dpcPptxGenPromise=null;throw err;});
     return window.__dpcPptxGenPromise;
   }
-  function ensureJsZip(){
-    if(window.JSZip) return Promise.resolve(window.JSZip);
-    if(window.__dpcJsZipPromise) return window.__dpcJsZipPromise;
-    window.__dpcJsZipPromise=new Promise(function(resolve,reject){
-      var script=document.createElement('script');
-      var timer=setTimeout(function(){reject(new Error('PPTX 편집 모듈을 불러오지 못했습니다. 네트워크를 확인해 주세요.'));},20000);
-      script.src=JSZIP_URL; script.async=true;
-      script.onload=function(){clearTimeout(timer);window.JSZip?resolve(window.JSZip):reject(new Error('PPTX 편집 모듈 초기화에 실패했습니다.'));};
-      script.onerror=function(){clearTimeout(timer);reject(new Error('PPTX 편집 모듈을 불러오지 못했습니다.'));};
-      (document.head||document.documentElement).appendChild(script);
-    }).catch(function(err){window.__dpcJsZipPromise=null;throw err;});
-    return window.__dpcJsZipPromise;
-  }
   var PPT_FONT_FACE='Malgun Gothic';
-  function xmlFontDefaults(xml){
-    return xml
-      .replace(/<a:ea typeface="[^"]*"\/>/g,'<a:ea typeface="'+PPT_FONT_FACE+'"/>')
-      .replace(/<a:font script="Hang" typeface="[^"]*"\/>/g,'<a:font script="Hang" typeface="'+PPT_FONT_FACE+'"/>');
-  }
-  function patchPictureFrames(xml){
-    return xml.replace(/<p:pic>[\s\S]*?<\/p:pic>/g,function(pic){
-      var marker=pic.match(/name="DPC_FRAME_([0-9]+)_([^"]*)"/);
-      if(marker){
-        var lineWidth=Math.max(1,parseInt(marker[1],10)||1);
-        pic=pic.replace(marker[0],'name="'+marker[2]+'"');
-        pic=pic.replace('</p:spPr>','<a:ln w="'+lineWidth+'"><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:prstDash val="solid"/></a:ln></p:spPr>');
-      }
-      return pic;
-    });
-  }
-  function patchTextDefaults(xml){
-    return xml.replace(/<p:sp>[\s\S]*?<\/p:sp>/g,function(shape){
-      var marker=shape.match(/name="DPC_TEXT_([^"]*)"/);
-      if(!marker) return shape;
-      shape=shape.replace(marker[0],'name="'+marker[1]+'"').replace(/lang="en-US"/g,'lang="ko-KR"');
-      shape=shape.replace(/<a:endParaRPr([^>]*)\/>/g,function(_all,attrs){
-        attrs=attrs.replace(/\s+lang="[^"]*"/g,'')+' lang="ko-KR"';
-        return '<a:endParaRPr'+attrs+'><a:latin typeface="'+PPT_FONT_FACE+'"/><a:ea typeface="'+PPT_FONT_FACE+'"/><a:cs typeface="'+PPT_FONT_FACE+'"/></a:endParaRPr>';
-      });
-      return shape;
-    });
-  }
-  async function normalizePptx(blob,JSZip){
-    var zip=await JSZip.loadAsync(blob);
-    var tasks=[];
-    zip.forEach(function(path,entry){
-      if(/^ppt\/slides\/slide\d+\.xml$/.test(path)){
-        tasks.push(entry.async('string').then(function(xml){zip.file(path,patchTextDefaults(patchPictureFrames(xml)));}));
-      }else if(path==='ppt/theme/theme1.xml'){
-        tasks.push(entry.async('string').then(function(xml){zip.file(path,xmlFontDefaults(xml));}));
-      }
-    });
-    await Promise.all(tasks);
-    return zip.generateAsync({type:'blob',compression:'STORE',mimeType:'application/vnd.openxmlformats-officedocument.presentationml.presentation'});
-  }
   function pageRecords(){
     var pages=E('pages'); if(!pages) return [];
     return Array.prototype.map.call(pages.querySelectorAll('.page'),function(page){return page.__dpcPptPage;}).filter(Boolean);
@@ -15677,8 +15601,7 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
     if(btn&&btn.__dpcWorking) return;
     try{
       if(btn){btn.__dpcWorking=true;btn.classList.add('is-working');btn.disabled=true;btn.textContent='PPTX 생성 중...';}
-      var modules=await Promise.all([ensurePptxGen(),ensureJsZip()]);
-      var PptxGenJS=modules[0], JSZip=modules[1];
+      var PptxGenJS=await ensurePptxGen();
       var pptx=new PptxGenJS();
       /* 16:9 기준 33.87 × 19.05 cm의 표준 1배 크기다.
          컷 수와 원본 픽셀 해상도는 슬라이드 물리 크기를 바꾸지 않는다. */
@@ -15711,11 +15634,11 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
           var imageObjectName='CUT '+String(ii+1).padStart(3,'0');
           if(placement.frame){
             var fr=rectInches(placement.frame,sx,sy,scale);
-            var visibleFrame=Math.max(0,(fr.w-ir.w)/2,(fr.h-ir.h)/2);
-            /* visibleFrame은 이미 캔버스에서 한쪽에 보이는 실제 프레임 두께다.
-               PPT 선 폭으로 변환할 때 다시 두 배로 만들지 않는다. */
-            var lineEmu=Math.max(1,Math.round(visibleFrame*914400));
-            imageObjectName='DPC_FRAME_'+lineEmu+'_'+imageObjectName;
+            /* 완성 파일을 다시 ZIP/XML로 풀지 않고 검정 프레임 면을 이미지
+               뒤에 직접 만든다. 메모리 사용이 한 번으로 끝나고 캔버스와 같은 경계를 쓴다. */
+            slide.addShape(pptx.ShapeType.rect,{x:fr.x,y:fr.y,w:fr.w,h:fr.h,
+              fill:{color:'000000'},line:{color:'000000',transparency:100},
+              altText:'FRAME '+itemName,objectName:'FRAME '+String(ii+1).padStart(3,'0')});
           }
           slide.addImage({data:data,x:ir.x,y:ir.y,w:ir.w,h:ir.h,altText:itemName,objectName:imageObjectName});
           if(placement.text){
@@ -15764,7 +15687,6 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
       }
       var out=await pptx.write({outputType:'blob',compression:false});
       if(!(out instanceof Blob)) out=new Blob([out],{type:'application/vnd.openxmlformats-officedocument.presentationml.presentation'});
-      out=await normalizePptx(out,JSZip);
       await downloadBlob(out,fileStem()+'.pptx');
       try{if(typeof window.gtag==='function') window.gtag('event','sheet_save_pptx',{tool_name:'frame_sheet',page_count:records.length});}catch(_e){}
     }catch(err){
