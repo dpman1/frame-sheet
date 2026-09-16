@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- BUILD V81: document-first startup/transfer and layout-driven image-mode sheet recommendation. -->
+<!-- BUILD V82: document-first defaults, layout-driven recommendation, and single-line mobile top action row. -->
 <html lang="ko">
 <head>
 <meta charset="utf-8">
@@ -4253,13 +4253,109 @@ if(bgColor.value!=="transparent"){
 };
 </script>
 
+<script id="dpc-inapp-save-bridge-v1">
+(function(){
+  'use strict';
+  if(window.DpcInAppSave) return;
+  var ua=String(navigator.userAgent||'');
+  var mobile=/Android|iPhone|iPad|iPod/i.test(ua);
+  var refHost='';
+  try{ refHost=new URL(document.referrer||'').hostname.toLowerCase(); }catch(_error){}
+  var uaRestricted=/(KAKAOTALK|FBAN|FBAV|FB_IAB|FB4A|FBIOS|FBBV|FBMD|FBSN|FBSS|FBCR|FBID|FBLC|FBOP|Messenger|Instagram)/i.test(ua)
+    ||(/Android/i.test(ua)&&(/;\s*wv\)/i.test(ua)||/\bVersion\/4\.0\b.*\bChrome\//i.test(ua)))
+    ||(/iPhone|iPad|iPod/i.test(ua)&&!/Safari\//i.test(ua)&&!/(CriOS|FxiOS|EdgiOS|OPiOS)/i.test(ua));
+  var refRestricted=mobile&&/(^|\.)(facebook\.com|messenger\.com|instagram\.com)$/.test(refHost);
+  var restricted=uaRestricted||refRestricted;
+  var app=/KAKAOTALK/i.test(ua)?'카카오톡':/(Instagram)/i.test(ua)||/(^|\.)instagram\.com$/.test(refHost)?'Instagram':/(FBAN|FBAV|FB_IAB|FB4A|FBIOS|FBBV|FBMD|FBSN|FBSS|FBCR|FBID|FBLC|FBOP|Messenger|Facebook)/i.test(ua)||/(^|\.)(facebook|messenger)\.com$/.test(refHost)?'Facebook':'인앱 브라우저';
+  var activeUrls=[];
+
+  function ensureUi(){
+    var root=document.getElementById('dpcInAppSaveDialog');
+    if(root) return root;
+    var style=document.createElement('style');
+    style.textContent='#dpcInAppSaveDialog{position:fixed;inset:0;z-index:2147483647;display:none;align-items:center;justify-content:center;padding:22px;background:rgba(0,0,0,.52);font-family:"Noto Sans KR",Arial,sans-serif}#dpcInAppSaveDialog.is-open{display:flex}#dpcInAppSaveDialog .dpc-save-box{width:min(420px,100%);box-sizing:border-box;padding:22px 20px 18px;border-radius:18px;background:#fff;color:#111;box-shadow:0 18px 55px rgba(0,0,0,.28)}#dpcInAppSaveDialog .dpc-save-title{margin:0 0 10px;font-size:19px;font-weight:800;line-height:1.4}#dpcInAppSaveDialog .dpc-save-message{margin:0;white-space:pre-line;font-size:15px;font-weight:500;line-height:1.6;color:#3c3c3c}#dpcInAppSaveDialog .dpc-save-actions{display:flex;gap:8px;margin-top:18px}#dpcInAppSaveDialog button{min-width:0;min-height:44px;flex:1;margin:0;padding:10px 12px;border:1px solid #d7d7d7;border-radius:10px;background:#f3f3f3;color:#222;font:700 15px/1.2 "Noto Sans KR",Arial,sans-serif}#dpcInAppSaveDialog button.dpc-save-primary{border-color:#168de2;background:#168de2;color:#fff}#dpcInAppSaveDialog button:active{transform:none;filter:brightness(.96)}@media(max-width:420px){#dpcInAppSaveDialog{padding:18px}#dpcInAppSaveDialog .dpc-save-box{padding:20px 16px 16px}#dpcInAppSaveDialog .dpc-save-actions{flex-direction:column-reverse}#dpcInAppSaveDialog button{width:100%}}';
+    document.head.appendChild(style);
+    root=document.createElement('div');
+    root.id='dpcInAppSaveDialog';
+    root.setAttribute('role','dialog');
+    root.setAttribute('aria-modal','true');
+    root.innerHTML='<div class="dpc-save-box"><h2 class="dpc-save-title"></h2><p class="dpc-save-message"></p><div class="dpc-save-actions"><button type="button" class="dpc-save-cancel">닫기</button><button type="button" class="dpc-save-secondary"></button><button type="button" class="dpc-save-primary"></button></div></div>';
+    document.body.appendChild(root);
+    return root;
+  }
+  function close(root){ root.classList.remove('is-open'); }
+  function chromeUrl(){
+    var here=location.href;
+    if(/Android/i.test(ua)){
+      var scheme=(location.protocol||'https:').replace(':','');
+      return 'intent://'+location.host+location.pathname+location.search+location.hash+'#Intent;scheme='+scheme+';package=com.android.chrome;S.browser_fallback_url='+encodeURIComponent(here)+';end';
+    }
+    if(/iPhone|iPad|iPod/i.test(ua)) return (/^https:/i.test(here)?'googlechromes://':'googlechrome://')+here.replace(/^https?:\/\//i,'');
+    return here;
+  }
+  function openChrome(){
+    try{ location.href=chromeUrl(); }
+    catch(_error){ try{ window.open(location.href,'_blank'); }catch(_ignore){} }
+  }
+  async function share(blobs,names,title){
+    if(!navigator.share||typeof File==='undefined') return false;
+    var files=blobs.map(function(blob,index){return new File([blob],names[index],{type:blob.type||'application/octet-stream'});});
+    try{
+      if(navigator.canShare&&!navigator.canShare({files:files})) return false;
+      await navigator.share({files:files,title:title||names[0]||'파일 저장'});
+      return true;
+    }catch(error){
+      if(error&&error.name==='AbortError') return true;
+      console.warn('[DPC_INAPP_SHARE]',error);
+      return false;
+    }
+  }
+  function present(options){
+    options=options||{};
+    var blobs=options.blobs||[];
+    var names=options.names||[];
+    var root=ensureUi();
+    var title=root.querySelector('.dpc-save-title');
+    var message=root.querySelector('.dpc-save-message');
+    var cancel=root.querySelector('.dpc-save-cancel');
+    var secondary=root.querySelector('.dpc-save-secondary');
+    var primary=root.querySelector('.dpc-save-primary');
+    activeUrls.forEach(function(url){try{URL.revokeObjectURL(url);}catch(_error){}}); activeUrls=[];
+    title.textContent=app+'에서는 파일 저장이 제한됩니다';
+    message.textContent=options.message||(options.image?'원본 이미지를 연 뒤 길게 눌러 저장하거나, Chrome에서 열어 다시 저장해 주세요.':'현재 생성한 파일을 이 브라우저가 직접 저장하지 못했습니다. Chrome에서 열어 다시 저장해 주세요.');
+    cancel.onclick=function(){close(root);};
+    secondary.style.display='';
+    primary.style.display='';
+    if(options.image&&blobs[0]){
+      var imageUrl=URL.createObjectURL(blobs[0]); activeUrls.push(imageUrl);
+      primary.textContent='이미지 열기';
+      primary.onclick=function(){var opened=null;try{opened=window.open(imageUrl,'_blank');}catch(_error){}if(!opened){try{location.href=imageUrl;}catch(_ignore){}}};
+      secondary.textContent='Chrome에서 열기';
+      secondary.onclick=openChrome;
+    }else if(navigator.share&&blobs.length){
+      primary.textContent='공유로 저장';
+      primary.onclick=async function(){primary.disabled=true;var ok=await share(blobs,names,options.title);primary.disabled=false;if(ok)close(root);};
+      secondary.textContent='Chrome에서 열기';
+      secondary.onclick=openChrome;
+    }else{
+      primary.textContent='Chrome에서 열기';
+      primary.onclick=openChrome;
+      secondary.style.display='none';
+    }
+    root.classList.add('is-open');
+    setTimeout(function(){try{primary.focus({preventScroll:true});}catch(_error){primary.focus();}},0);
+  }
+  window.DpcInAppSave={restricted:restricted,app:app,share:share,present:present,openChrome:openChrome};
+})();
+</script>
+
 <script id="dpc-sheet-png-output-authority">
 (function(){
   'use strict';
   var pngCache=new WeakMap();
   var dataUrlCache=new WeakMap();
   var isKakao=/KAKAOTALK/i.test(navigator.userAgent||'');
-  var isRestrictedInApp=/(KAKAOTALK|FBAN|FBAV|FB_IAB|Instagram)/i.test(navigator.userAgent||'');
+  var isRestrictedInApp=!!(window.DpcInAppSave&&window.DpcInAppSave.restricted);
 
   function dataUrlBlob(dataUrl){
     var parts=String(dataUrl||'').split(',');
@@ -4349,12 +4445,7 @@ if(bgColor.value!=="transparent"){
   window.dpcSaveBlob=async function(blob,name){
     if(isRestrictedInApp){
       if(await shareFiles([blob],[name])) return true;
-      if(/^image\//i.test(blob.type||'')){
-        openImageFallback(blob);
-        alert('인앱 브라우저가 다운로드를 막아 이미지 원본을 열었습니다. 이미지를 길게 눌러 저장하거나 메뉴에서 Chrome으로 열어 주세요.');
-        return true;
-      }
-      alert('이 인앱 브라우저는 파일 저장을 지원하지 않습니다. 우측 상단 메뉴에서 Chrome으로 연 뒤 다시 저장해 주세요.');
+      window.DpcInAppSave.present({blobs:[blob],names:[name],title:name,image:/^image\//i.test(blob.type||'')});
       return false;
     }
     directDownload(blob,name);
@@ -4412,12 +4503,12 @@ if(bgColor.value!=="transparent"){
       var names=blobs.map(function(_blob,index){ return base+'-'+String(index+1).padStart(3,'0')+'.png'; });
       if(isRestrictedInApp){
         if(await shareFiles(blobs,names)) return;
-        if(blobs.length===1){ openImageFallback(blobs[0]); alert('인앱 브라우저가 다운로드를 막아 이미지 원본을 열었습니다. 이미지를 길게 눌러 저장하거나 메뉴에서 Chrome으로 열어 주세요.'); return; }
+        if(blobs.length===1){ window.DpcInAppSave.present({blobs:[blobs[0]],names:[names[0]],title:names[0],image:true}); return; }
         var inAppZip=new JSZip();
         blobs.forEach(function(blob,index){ inAppZip.file(names[index],blob); });
         var zipBlob=await inAppZip.generateAsync({type:'blob'});
         if(await shareFiles([zipBlob],[base+'.zip'])) return;
-        alert('이 인앱 브라우저는 여러 파일 저장을 지원하지 않습니다. 우측 상단 메뉴에서 Chrome으로 연 뒤 다시 저장해 주세요.');
+        window.DpcInAppSave.present({blobs:[zipBlob],names:[base+'.zip'],title:'SHEET 압축파일 저장'});
         return;
       }
       blobs.forEach(function(blob,index){ directDownload(blob,names[index]); });
@@ -15896,15 +15987,27 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
               /* 원본 픽셀과 바이트는 재표본화하지 않고 그대로 넣는다. */
           var data=await itemImageData(item);
           var imageObjectName='CUT '+String(ii+1).padStart(3,'0');
+          slide.addImage({data:data,x:ir.x,y:ir.y,w:ir.w,h:ir.h,altText:itemName,objectName:imageObjectName});
           if(placement.frame){
             var fr=rectInches(placement.frame,sx,sy,scale);
-            /* 완성 파일을 다시 ZIP/XML로 풀지 않고 검정 프레임 면을 이미지
-               뒤에 직접 만든다. 메모리 사용이 한 번으로 끝나고 캔버스와 같은 경계를 쓴다. */
-            slide.addShape(pptx.ShapeType.rect,{x:fr.x,y:fr.y,w:fr.w,h:fr.h,
-              fill:{color:'000000'},line:{color:'000000',transparency:100},
-              altText:'FRAME '+itemName,objectName:'FRAME '+String(ii+1).padStart(3,'0')});
+            /* 프레임은 검정 면을 사진 뒤에 까는 방식이 아니라 PowerPoint의
+               편집 가능한 사각형 선 하나로 만든다. 선은 경계 중앙에 그려지므로
+               캔버스의 외곽 경계에서 두께의 절반만 안쪽으로 이동해야 PNG와
+               같은 최종 외곽을 유지한다. */
+            var frameEdges=[ir.x-fr.x,ir.y-fr.y,(fr.x+fr.w)-(ir.x+ir.w),(fr.y+fr.h)-(ir.y+ir.h)]
+              .filter(function(v){return Number.isFinite(v)&&v>0.000001;});
+            var frameIn=frameEdges.length?Math.min.apply(Math,frameEdges):Math.max(1/914400,scale);
+            var framePt=Math.max(.25,frameIn*72);
+            var frameShape={
+              x:fr.x+frameIn/2,
+              y:fr.y+frameIn/2,
+              w:Math.max(1/914400,fr.w-frameIn),
+              h:Math.max(1/914400,fr.h-frameIn)
+            };
+            slide.addShape(pptx.ShapeType.rect,{x:frameShape.x,y:frameShape.y,w:frameShape.w,h:frameShape.h,
+              fill:{color:'FFFFFF',transparency:100},line:{color:'000000',width:framePt,transparency:0},
+              altText:'EDITABLE FRAME '+itemName,objectName:'DPC_FRAME_'+String(ii+1).padStart(3,'0')});
           }
-          slide.addImage({data:data,x:ir.x,y:ir.y,w:ir.w,h:ir.h,altText:itemName,objectName:imageObjectName});
           if(placement.text){
             var tr=rectInches(placement.text,sx,sy,scale);
             var textName='TEXT '+String(ii+1).padStart(3,'0');
@@ -16687,5 +16790,74 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',bind); else bind();
 })();
 </script>
+
+<style id="dpc-sheet-mobile-topbar-single-line-v82">
+/* CUT 연동 버튼을 로고로 옮긴 목적에 맞춰 모바일 실행 행은 항상 한 줄로 유지한다.
+   저장 영역과 기능 구조는 바꾸지 않고, 상단 행의 가용 폭만 명시적으로 배분한다. */
+@media(max-width:430px){
+  .sheet-logo-image + .tool-card.top-card{
+    padding-left:12px!important;
+    padding-right:12px!important;
+  }
+  .sheet-logo-image + .tool-card.top-card .topbar{
+    display:flex!important;
+    flex-wrap:nowrap!important;
+    gap:6px!important;
+    width:100%!important;
+  }
+  .sheet-logo-image + .tool-card.top-card .top-left{
+    display:flex!important;
+    flex:1 1 auto!important;
+    min-width:0!important;
+    flex-wrap:nowrap!important;
+    gap:5px!important;
+  }
+  .sheet-logo-image + .tool-card.top-card .top-left button{
+    min-width:0!important;
+    padding-left:8px!important;
+    padding-right:8px!important;
+  }
+  .sheet-logo-image + .tool-card.top-card .last-frame-ratio-badge{
+    flex:0 0 auto!important;
+    min-width:0!important;
+    padding-left:7px!important;
+    padding-right:7px!important;
+    white-space:nowrap!important;
+  }
+  .sheet-logo-image + .tool-card.top-card .dpc-app-transfer-actions{
+    flex:0 0 auto!important;
+    min-width:0!important;
+  }
+  .sheet-logo-image + .tool-card.top-card #make{
+    min-width:78px!important;
+    padding-left:9px!important;
+    padding-right:9px!important;
+  }
+}
+@media(max-width:370px){
+  .sheet-logo-image + .tool-card.top-card{
+    padding-left:10px!important;
+    padding-right:10px!important;
+  }
+  .sheet-logo-image + .tool-card.top-card .topbar{gap:5px!important;}
+  .sheet-logo-image + .tool-card.top-card .top-left{gap:4px!important;}
+  .sheet-logo-image + .tool-card.top-card .top-left button{
+    padding-left:6px!important;
+    padding-right:6px!important;
+    font-size:14px!important;
+  }
+  .sheet-logo-image + .tool-card.top-card .last-frame-ratio-badge{
+    padding-left:6px!important;
+    padding-right:6px!important;
+    font-size:14px!important;
+  }
+  .sheet-logo-image + .tool-card.top-card #make{
+    min-width:74px!important;
+    padding-left:7px!important;
+    padding-right:7px!important;
+    font-size:15px!important;
+  }
+}
+</style>
 </body>
 </html>
