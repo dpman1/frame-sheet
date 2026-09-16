@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- BUILD V80: transfer button moved to the logo slot without changing the execution-row height. -->
+<!-- BUILD V81: document-first startup/transfer and layout-driven image-mode sheet recommendation. -->
 <html lang="ko">
 <head>
 <meta charset="utf-8">
@@ -3442,30 +3442,30 @@ body.dpc-tools-open .dpc-tools-panel{display:block}
 <div class="tool-card controls-card">
   <div class="fs-row fs-ratio-row">
     <span class="fs-title">시트</span>
-    <button type="button" id="ratioPickerBtn" class="fs-picker">선택 ▼</button>
-    <input id="ratioW" type="number" value="4" class="fs-num">
+    <button type="button" id="ratioPickerBtn" class="fs-picker">16:9 ▼</button>
+    <input id="ratioW" type="number" value="16" class="fs-num">
     <span class="fs-sep">:</span>
-    <input id="ratioH" type="number" value="3" class="fs-num">
-    <label class="fs-lock"><input type="checkbox" id="lockRatio"> 고정</label>
+    <input id="ratioH" type="number" value="9" class="fs-num">
+    <label class="fs-lock"><input type="checkbox" id="lockRatio" checked> 고정</label>
   </div>
 
   <div class="fs-row fs-layout-row">
     <span class="fs-title">규격</span>
-    <button type="button" id="layoutPickerBtn" class="fs-picker">선택 ▼</button>
-    <input id="colsInput" type="number" value="4" class="fs-num">
+    <button type="button" id="layoutPickerBtn" class="fs-picker">5×2 ▼</button>
+    <input id="colsInput" type="number" value="5" class="fs-num">
     <span class="fs-sep">×</span>
-    <input id="rowsInput" type="number" value="5" class="fs-num">
+    <input id="rowsInput" type="number" value="2" class="fs-num">
     <label class="fs-lock"><input type="checkbox" id="lockLayout"> 고정</label>
   </div>
 
   <div class="fs-row fs-flow-row">
     <span class="fs-title">배치</span>
-    <label class="radio-label"><input type="radio" id="flowVertical" name="flowDirection" value="vertical" checked> 세로</label>
-    <label class="radio-label"><input type="radio" id="flowHorizontal" name="flowDirection" value="horizontal"> 가로</label>
+    <label class="radio-label"><input type="radio" id="flowVertical" name="flowDirection" value="vertical"> 세로</label>
+    <label class="radio-label"><input type="radio" id="flowHorizontal" name="flowDirection" value="horizontal" checked> 가로</label>
     <span class="sheet-purpose-switch" role="group" aria-label="시트 용도">
-      <button type="button" id="purposeImage" class="sheet-purpose-btn is-active" aria-pressed="true">이미지</button>
+      <button type="button" id="purposeImage" class="sheet-purpose-btn" aria-pressed="false">이미지</button>
       <span class="sheet-purpose-divider" aria-hidden="true">|</span>
-      <button type="button" id="purposeDocument" class="sheet-purpose-btn" aria-pressed="false">문서</button>
+      <button type="button" id="purposeDocument" class="sheet-purpose-btn is-active" aria-pressed="true">문서</button>
     </span>
   </div>
 
@@ -3491,8 +3491,8 @@ body.dpc-tools-open .dpc-tools-panel{display:block}
 
   <div style="display:none">
     <select id="flow">
-      <option value="vertical" selected>세로우선</option>
-      <option value="horizontal">가로우선</option>
+      <option value="vertical">세로우선</option>
+      <option value="horizontal" selected>가로우선</option>
     </select>
     <select id="ratioPreset">
       <option value="9:20">9:20</option>
@@ -10777,18 +10777,21 @@ render=function(options){
     if(!c || !r) return;
     /* 비율 고정은 비율 변경만 막는다. 페이지 규격이 바뀌면
        외곽·간격은 현재 수용량 기준으로 항상 다시 계산해야 한다. */
-    syncTextMarginBaseFromVisible(c,r);
+    var layoutRecommendationCount=syncTextMarginBaseFromVisible(c,r);
     var delay=ev&&ev.type==='input'?140:0;
     linkedLayoutTimer=setTimeout(function(){
       /* 지연 중 두 입력값이 바뀔 수 있으므로 실행 시점의 완성된 값을 다시 읽는다. */
       var currentC=positiveValue('colsInput'), currentR=positiveValue('rowsInput');
       if(!currentC||!currentR) return;
-      syncTextMarginBaseFromVisible(currentC,currentR);
+      layoutRecommendationCount=syncTextMarginBaseFromVisible(currentC,currentR);
       if(typeof recommend==='function') recommend({
         __sheetLinkedRecommendation:true,
         preserveLayout:true,
         preserveRatio:isSheetRatioLocked(),
-        countOverride:currentRecommendationCount(),
+        /* 규격을 바꾸는 순간의 추천 기준은 업로드된 전체 컷 수가 아니라
+           새 페이지 규격의 수용량이다. 컷 유무와 관계없이 같은 규격은
+           같은 추천 시트 비율을 받아야 한다. */
+        countOverride:layoutRecommendationCount,
         spacingCountOverride:currentActualItemCount(currentC,currentR),
         spacingCols:currentC,
         spacingRows:currentR
@@ -16052,6 +16055,9 @@ async function sendFiles(targetRole,records,button,target,transferId){
   }
 }
 async function ingestSheet(files){
+  /* CUT에서 새로 넘어온 작업은 감독·조감독용 문서 시트를 기본으로 시작한다.
+     수신 창이 이전에 이미지 모드로 사용되었더라도 전송 작업의 시작점은 동일하다. */
+  if(typeof window.dpcApplySheetPurposeMode==='function') window.dpcApplySheetPurposeMode('document');
   if(typeof window.dpcProcessSheetFiles==='function'){await window.dpcProcessSheetFiles(files);return;}
   if(typeof dpcProcessSheetFiles==='function'){await dpcProcessSheetFiles(files);return;}
   var input=document.getElementById('files');if(!input)throw new Error('SHEET 파일 입력을 찾을 수 없습니다.');
@@ -16220,7 +16226,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 </style>
 
 <script id="dpc-sheet-purpose-mode-v75-script">
-/* V79 목적별 작업 모드
+/* V81 목적별 작업 모드
    - 이미지형: 기존 자동 추천 흐름
    - 문서형: 16:9 시트 고정, 가로 5x2 / 세로 2x5, 텍스트 여백, 컷 넘버 바깥쪽
    - 문서형 자동 규격은 텍스트 여백/방향의 4가지 조합만 사용한다.
@@ -16228,7 +16234,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
    - 규격 고정은 실제 숫자 고정만 담당한다.
    선택한 모드는 파일 교체/추가 과정에서 초기화하지 않는다. */
 (function(){
-  var mode='image';
+  var mode='document';
   var documentFlow='horizontal';
   var documentTextMargin=true;
   var documentRatioLocked=true;
@@ -16257,9 +16263,9 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     return {rw:'4',rh:'3',c:'4',r:'5',flow:'vertical',ratioLocked:false,layoutLocked:false};
   }
   /* '초기화'의 권위는 새 접속 상태다. 파일 교체/추가는 현재 목적을 유지하지만,
-     명시적 초기화는 모드 표시와 옵션을 함께 이미지 기본 상태로 되돌린다. */
-  function resetPurposeToFreshImage(applyUi){
-    mode='image';
+     명시적 초기화는 감독·조감독용 문서 기본 상태로 되돌린다. */
+  function resetPurposeToFreshDefault(applyUi){
+    mode='document';
     documentFlow='horizontal';
     documentTextMargin=true;
     documentRatioLocked=true;
@@ -16271,7 +16277,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     lockedDocumentLayout=null;
     imageState=freshImageState();
     syncButtons();
-    if(applyUi) applyImagePreset(false);
+    if(applyUi) applyDocumentPreset();
   }
   function readImageState(){
     return {
@@ -16435,16 +16441,17 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   }
   function bind(){
     var image=E('purposeImage'), documentMode=E('purposeDocument');
-    imageState=readImageState();
+    /* 문서가 최초 화면이므로 이미지 모드의 첫 진입값은 별도 기본 프리셋으로 보관한다. */
+    imageState=freshImageState();
     /* document 캡처 단계에서 모드를 먼저 바꾼다. 기존 초기화 핸들러가
        applyFrameSheetInitialState()를 호출해도 문서 프리셋이 다시 덮지 못한다. */
     if(!document.__dpcPurposeFreshResetV79){
       document.addEventListener('click',function(event){
         var target=event.target&&event.target.closest?event.target.closest('#clear,#cutResetBtn'):null;
         if(!target) return;
-        resetPurposeToFreshImage(false);
-        setTimeout(function(){ resetPurposeToFreshImage(true); },0);
-        setTimeout(function(){ resetPurposeToFreshImage(true); },100);
+        resetPurposeToFreshDefault(false);
+        setTimeout(function(){ resetPurposeToFreshDefault(true); },0);
+        setTimeout(function(){ resetPurposeToFreshDefault(true); },100);
       },true);
       document.__dpcPurposeFreshResetV79=true;
     }
@@ -16633,9 +16640,9 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     if(typeof window.resetFrameSheetRuntimeToInitial==='function' && !window.resetFrameSheetRuntimeToInitial.__dpcPurposeFreshResetV79){
       var oldRuntimeReset=window.resetFrameSheetRuntimeToInitial;
       var wrappedRuntimeReset=function(){
-        resetPurposeToFreshImage(false);
+        resetPurposeToFreshDefault(false);
         var result=oldRuntimeReset.apply(this,arguments);
-        resetPurposeToFreshImage(true);
+        resetPurposeToFreshDefault(true);
         return result;
       };
       wrappedRuntimeReset.__dpcPurposeFreshResetV79=true;
@@ -16652,6 +16659,11 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       setTimeout(reapplyMode,500);
     });
     syncButtons();
+    /* 정적 초기값과 실행 상태를 문서 모드로 통일한다. 고급 옵션 컨트롤은
+       지연 재구성될 수 있으므로 같은 프리셋을 한 번 더 동기화한다. */
+    applyDocumentPreset();
+    setTimeout(function(){ if(mode==='document') applyDocumentPreset(); },0);
+    setTimeout(function(){ if(mode==='document') applyDocumentPreset(); },100);
   }
   window.dpcApplySheetPurposeMode=function(next){
     if(mode==='image' && next==='document') imageState=readImageState();
@@ -16671,7 +16683,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     if(mode==='document') applyDocumentPreset(); else applyImagePreset(true);
   };
   window.dpcGetSheetPurposeMode=function(){ return mode; };
-  window.dpcResetSheetPurposeToInitial=function(){ resetPurposeToFreshImage(true); };
+  window.dpcResetSheetPurposeToInitial=function(){ resetPurposeToFreshDefault(true); };
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',bind); else bind();
 })();
 </script>
