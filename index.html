@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- BUILD V78: flow changes resolve from the canonical count recommendation, never the previous state. -->
+<!-- BUILD V79: image mode keeps the natural grid solver; document mode alone uses row/column minimum-gap fitting. -->
 <html lang="ko">
 <head>
 <meta charset="utf-8">
@@ -13058,6 +13058,11 @@ body.__sheet_processing #make.sheetBtn:focus{
   }
   async function sharedPixelBasisForGroup(pageLists,opt,globalReferenceItem){
     if(!pageLists.length || opt.fit!=='pixel') return null;
+    /* 이미지형은 원래의 자연 그리드 공식이 기준이다. 문서형의 고정 페이지용
+       행/열 보정을 공유하면 비율이 조금 다른 컷에서도 행마다 간격과 끝 여백이
+       흔들리므로, 공통 픽셀 템플릿은 문서형에서만 만든다. */
+    var purpose=(typeof window.dpcGetSheetPurposeMode==='function')?window.dpcGetSheetPurposeMode():'image';
+    if(purpose!=='document') return null;
     /* 잔여 외곽 크롭은 마지막 페이지의 규격 자체를 바꾸는 명시적 옵션이다.
        전체 규격을 유지하는 일반 경로만 공통 페이지 계획을 공유한다. */
     var rule=document.querySelector('input[name="dpcMarginRule"]:checked');
@@ -13468,9 +13473,21 @@ body.__sheet_processing #make.sheetBtn:focus{
               }
               var frameTotal=members.length*fs*2;
               var localGap=desiredGap;
+              var fullGroup=members.length===(axisIsX?layoutCols:layoutRows);
               if(members.length>1){
                 var gapCapacity=(availableAxis-frameTotal-contentTotal)/(members.length-1);
-                localGap=Math.min(desiredGap,Math.max(minimumGap,gapCapacity));
+                if(isGapRule){
+                  /* 간격 우선은 지정 간격을 보존하고 남는 공간을 양쪽 외곽으로 보낸다. */
+                  localGap=desiredGap;
+                }else if(fullGroup){
+                  /* 외곽 우선의 꽉 찬 행/열은 양쪽 외곽을 동일하게 고정한다.
+                     최소 간격이 확보되면 남는 축 길이를 모든 간격에 균등 배분하고,
+                     확보되지 않을 때만 아래에서 행/열 전체를 한 번에 축소한다. */
+                  localGap=gapCapacity>=minimumGap?gapCapacity:minimumGap;
+                }else{
+                  /* 마지막 불완전 행/열은 큰 빈칸을 만들지 않고 정상 간격과 시작선을 유지한다. */
+                  localGap=desiredGap;
+                }
               }
               var required=contentTotal+frameTotal+(members.length-1)*localGap;
               if(required>availableAxis+0.001 && contentTotal>0){
@@ -16563,7 +16580,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     /* 일반 recommend()의 컷 수 표가 문서 모드의 10컷 템플릿을 덮지 않게 한다.
        잠금 OFF일 때는 방향별 문서 규격을 먼저 적용하고, 원래 추천기는
        그 규격을 보존한 채 간격·외곽 같은 공통값만 계산한다. */
-    if(typeof window.recommend==='function' && !window.recommend.__dpcDocumentTemplateV78){
+    if(typeof window.recommend==='function' && !window.recommend.__dpcDocumentTemplateV79){
       var oldRecommend=window.recommend;
       var documentRecommend=function(request){
         if(mode==='document'){
@@ -16590,7 +16607,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         }
         return oldRecommend.apply(this,arguments);
       };
-      documentRecommend.__dpcDocumentTemplateV78=true;
+      documentRecommend.__dpcDocumentTemplateV79=true;
       window.recommend=documentRecommend;
     }
 
