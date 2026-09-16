@@ -15944,6 +15944,32 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
     var x2=Math.round((sx+(rect.x+rect.w)*scale)*emu), y2=Math.round((sy+(rect.y+rect.h)*scale)*emu);
     return {x:x1/emu,y:y1/emu,w:Math.max(1,x2-x1)/emu,h:Math.max(1,y2-y1)/emu};
   }
+  function patchPictureFrameOutlines(xml){
+    /* PptxGenJS 4.0.1은 그림 개체의 line 옵션을 내보내지 않는다.
+       따라서 별도 도형을 추가하지 않고, 표시가 붙은 p:pic의 spPr에만
+       DrawingML 윤곽선을 넣는다. 결과는 컷당 그림 개체 하나다. */
+    return xml.replace(/<p:pic>[\s\S]*?<\/p:pic>/g,function(pic){
+      var marker=pic.match(/name="DPC_FRAME_([0-9]+)_([^"]*)"/);
+      if(!marker) return pic;
+      var lineWidth=Math.max(1,parseInt(marker[1],10)||1);
+      pic=pic.replace(marker[0],'name="'+marker[2]+'"');
+      return pic.replace('</p:spPr>','<a:ln w="'+lineWidth+'"><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:prstDash val="solid"/></a:ln></p:spPr>');
+    });
+  }
+  async function applyPictureFrameOutlines(blob){
+    if(!window.JSZip) throw new Error('PPTX 편집 모듈을 사용할 수 없습니다.');
+    var zip=await window.JSZip.loadAsync(blob);
+    var tasks=[];
+    zip.forEach(function(path,entry){
+      if(/^ppt\/slides\/slide\d+\.xml$/.test(path)){
+        tasks.push(entry.async('string').then(function(xml){
+          zip.file(path,patchPictureFrameOutlines(xml));
+        }));
+      }
+    });
+    await Promise.all(tasks);
+    return zip.generateAsync({type:'blob',compression:'STORE',mimeType:PPTX_MIME});
+  }
   async function exportPptx(){
     var records=pageRecords();
     if(!records.length){alert('SHEET를 먼저 생성해 주세요.');return;}
@@ -15987,27 +16013,15 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
               /* 원본 픽셀과 바이트는 재표본화하지 않고 그대로 넣는다. */
           var data=await itemImageData(item);
           var imageObjectName='CUT '+String(ii+1).padStart(3,'0');
-          slide.addImage({data:data,x:ir.x,y:ir.y,w:ir.w,h:ir.h,altText:itemName,objectName:imageObjectName});
           if(placement.frame){
             var fr=rectInches(placement.frame,sx,sy,scale);
-            /* 프레임은 검정 면을 사진 뒤에 까는 방식이 아니라 PowerPoint의
-               편집 가능한 사각형 선 하나로 만든다. 선은 경계 중앙에 그려지므로
-               캔버스의 외곽 경계에서 두께의 절반만 안쪽으로 이동해야 PNG와
-               같은 최종 외곽을 유지한다. */
-            var frameEdges=[ir.x-fr.x,ir.y-fr.y,(fr.x+fr.w)-(ir.x+ir.w),(fr.y+fr.h)-(ir.y+ir.h)]
-              .filter(function(v){return Number.isFinite(v)&&v>0.000001;});
-            var frameIn=frameEdges.length?Math.min.apply(Math,frameEdges):Math.max(1/914400,scale);
-            var framePt=Math.max(.25,frameIn*72);
-            var frameShape={
-              x:fr.x+frameIn/2,
-              y:fr.y+frameIn/2,
-              w:Math.max(1/914400,fr.w-frameIn),
-              h:Math.max(1/914400,fr.h-frameIn)
-            };
-            slide.addShape(pptx.ShapeType.rect,{x:frameShape.x,y:frameShape.y,w:frameShape.w,h:frameShape.h,
-              fill:{color:'FFFFFF',transparency:100},line:{color:'000000',width:framePt,transparency:0},
-              altText:'EDITABLE FRAME '+itemName,objectName:'DPC_FRAME_'+String(ii+1).padStart(3,'0')});
+            /* 그림 윤곽선은 그림 경계의 안팎으로 절반씩 그려진다.
+               프레임 외곽과 같은 크기가 되도록 양쪽 프레임 폭을 선 폭으로 쓴다. */
+            var visibleFrame=Math.max(0,(fr.w-ir.w)/2,(fr.h-ir.h)/2);
+            var lineEmu=Math.max(1,Math.round(visibleFrame*2*914400));
+            imageObjectName='DPC_FRAME_'+lineEmu+'_'+imageObjectName;
           }
+          slide.addImage({data:data,x:ir.x,y:ir.y,w:ir.w,h:ir.h,altText:itemName,objectName:imageObjectName});
           if(placement.text){
             var tr=rectInches(placement.text,sx,sy,scale);
             var textName='TEXT '+String(ii+1).padStart(3,'0');
@@ -16056,6 +16070,7 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
       /* PPTX는 ZIP 패키지이지만 다운로드 MIME은 반드시 PPTX 전용이어야 한다.
          Blob 여부와 무관하게 다시 감싸 Android/웹뷰의 ZIP 오인식을 막는다. */
       var out=new Blob([rawOut],{type:PPTX_MIME});
+      out=await applyPictureFrameOutlines(out);
       await downloadBlob(out,fileStem()+'.pptx');
       try{if(typeof window.gtag==='function') window.gtag('event','sheet_save_pptx',{tool_name:'frame_sheet',page_count:records.length});}catch(_e){}
     }catch(err){
