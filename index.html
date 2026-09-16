@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- BUILD V71: recalculate spacing from actual item count and visible page capacity even when sheet ratio is locked. -->
+<!-- BUILD V78: flow changes resolve from the canonical count recommendation, never the previous state. -->
 <html lang="ko">
 <head>
 <meta charset="utf-8">
@@ -3463,6 +3463,11 @@ body.dpc-tools-open .dpc-tools-panel{display:block}
     <span class="fs-title">배치</span>
     <label class="radio-label"><input type="radio" id="flowVertical" name="flowDirection" value="vertical" checked> 세로</label>
     <label class="radio-label"><input type="radio" id="flowHorizontal" name="flowDirection" value="horizontal"> 가로</label>
+    <span class="sheet-purpose-switch" role="group" aria-label="시트 용도">
+      <button type="button" id="purposeImage" class="sheet-purpose-btn is-active" aria-pressed="true">이미지</button>
+      <span class="sheet-purpose-divider" aria-hidden="true">|</span>
+      <button type="button" id="purposeDocument" class="sheet-purpose-btn" aria-pressed="false">문서</button>
+    </span>
   </div>
 
   <details id="advancedOptions" class="advanced-options">
@@ -3603,6 +3608,7 @@ function applyFrameSheetInitialState(){
   window.__sheetUserEditedLayout=false;
   window.__sheetUserEditedMargin=false;
   window.__sheetUserEditedGap=false;
+  window.__sheetUserEditedFrameSize=false;
   window.__fsCurrentUiDirty=false;
   window.__dpcTextMarginBaseLayout=null;
   const advanced=document.getElementById('advancedOptions');
@@ -4655,6 +4661,30 @@ document.addEventListener('DOMContentLoaded',()=>{
   window.dpcScaleBlankDimension=function(base,value){ var s=scale(value); return Math.round(Number(base)*s.num/s.den); };
   window.dpcBlankResolutionKey=function(value){ return scale(value).key; };
   window.dpcBlankResolutionLabel=function(value){ return scale(value).label; };
+  /* 프레임 해상도 안전 상한의 단일 권위.
+     - 가로형 프레임: 높이 1080을 기준으로 폭을 산출한다.
+     - 세로형 프레임: 너비 1080을 기준으로 높이를 산출한다.
+     - 4:1 초과는 50%, 10:1 초과는 비율 1 증가마다 1%p씩 더 낮춘다.
+     빈프레임 생성과 실제 이미지의 표시 기본값이 반드시 같은 규칙을 공유한다. */
+  window.dpcFrameResolutionEnvelope=function(width,height){
+    var w=Number(width), h=Number(height);
+    if(!isFinite(w)||w<=0) w=16;
+    if(!isFinite(h)||h<=0) h=9;
+    var ratio=w/h;
+    var aspect=Math.max(ratio,1/ratio);
+    var baseW,baseH;
+    if(ratio<1){ baseW=1080; baseH=Math.round(1080/ratio); }
+    else{ baseH=1080; baseW=Math.round(1080*ratio); }
+    var maxPercent=100;
+    if(aspect>4) maxPercent=50;
+    if(aspect>10) maxPercent=50-Math.ceil(aspect-10);
+    maxPercent=Math.max(1,Math.min(100,maxPercent));
+    return {
+      ratio:ratio,aspect:aspect,baseW:baseW,baseH:baseH,maxPercent:maxPercent,
+      safeW:Math.max(1,Math.round(baseW*maxPercent/100)),
+      safeH:Math.max(1,Math.round(baseH*maxPercent/100))
+    };
+  };
 })();
 </script>
 
@@ -5315,30 +5345,36 @@ document.addEventListener('DOMContentLoaded',()=>{
     const h = document.getElementById('flowHorizontal');
     function applyUserFlow(value){
       if(!flow) return;
-      const previous=flow.value==='horizontal'?'horizontal':'vertical';
+      const currentC=Math.max(1,parseInt(document.getElementById('colsInput')?.value,10)||1);
+      const currentR=Math.max(1,parseInt(document.getElementById('rowsInput')?.value,10)||1);
       flow.value=value;
       window.__sheetUserEditedFlow=true;
-      if(previous!==value && typeof recommend==='function'){
-        const base=window.__dpcTextMarginBaseLayout;
+      /* 문서 모드는 목적 프리셋의 방향 매트릭스가 단일 권위다. */
+      const purpose=(typeof window.dpcGetSheetPurposeMode==='function')?window.dpcGetSheetPurposeMode():'image';
+      if(purpose==='document'){
+        if(typeof syncFrameSheetOptionLabels==='function') syncFrameSheetOptionLabels();
+        return;
+      }
+      if(typeof recommend==='function'){
         const textOn=!!document.getElementById('textMarginOn')?.checked;
         const layoutLocked=!!document.getElementById('lockLayout')?.checked;
-        if(textOn&&base&&!layoutLocked&&typeof orientSheetRecommendation==='function'){
-          const orientedBase=orientSheetRecommendation(base.c,base.r,1,1,previous,value);
-          base.c=orientedBase.c;
-          base.r=orientedBase.r;
-          base.flow=value;
-        }
-        const fallbackCount=(()=>{
-          if(textOn&&base) return Math.max(1,(parseInt(base.c,10)||1)*(parseInt(base.r,10)||1));
-          if(typeof items!=='undefined'&&Array.isArray(items)&&items.length) return items.length;
-          const c=parseInt(document.getElementById('colsInput')?.value,10)||1;
-          const r=parseInt(document.getElementById('rowsInput')?.value,10)||1;
-          return Math.max(1,c*r);
-        })();
-        const count=typeof window.currentSheetRecommendationCount==='function'
-          ? window.currentSheetRecommendationCount()
-          : fallbackCount;
-        recommend({__sheetLinkedRecommendation:true,countOverride:Math.max(1,count||fallbackCount)});
+        const ratioLocked=!!document.getElementById('lockRatio')?.checked;
+        const actualCount=(typeof items!=='undefined'&&Array.isArray(items)&&items.length)
+          ? items.length
+          : Math.max(1,currentC*currentR);
+        /* 현재 c/r·비율을 회전시키지 않는다. 실제 컷 수와 목표 방향으로
+           같은 원본 추천식을 다시 풀기 때문에 왕복해도 항상 같은 결과다.
+           텍스트 여백 ON은 그 원본 규격을 새 기준으로 한 번만 변환한다. */
+        recommend({
+          __sheetLinkedRecommendation:true,
+          countOverride:Math.max(1,actualCount),
+          spacingCountOverride:Math.max(1,actualCount),
+          spacingCols:currentC,
+          spacingRows:currentR,
+          preserveLayout:layoutLocked,
+          preserveRatio:ratioLocked,
+          rebaseTextMargin:textOn&&!layoutLocked
+        });
       }
       if(typeof syncFrameSheetOptionLabels==='function') syncFrameSheetOptionLabels();
     }
@@ -6634,6 +6670,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     window.__sheetUserEditedFlow=false;
     window.__sheetUserEditedMargin=false;
     window.__sheetUserEditedGap=false;
+    window.__sheetUserEditedFrameSize=false;
     window.__fsCurrentUiDirty=false;
     window.__fsInitialBlankSheetUsed=false;
     window.__fsInitialLiteralBlankOkUsed=false;
@@ -6766,34 +6803,11 @@ document.addEventListener('DOMContentLoaded',()=>{
     }
   }
   function baseSize(rw,rh){
-    var w,h;
-    if(rw<rh){
-      w=1080;
-      h=Math.round(1080*(rh/rw));
-    }else{
-      h=1080;
-      w=Math.round(1080*(rw/rh));
-    }
-    return {w:w,h:h,area:w*h,ar:Math.max(rw/rh,rh/rw)};
+    var e=window.dpcFrameResolutionEnvelope(rw,rh);
+    return {w:e.baseW,h:e.baseH,area:e.baseW*e.baseH,ar:e.aspect};
   }
   function autoMaxPercent(rw,rh){
-    var b=baseSize(rw,rh);
-    var ar=b.ar;
-
-    // 확정 규칙:
-    // - 4:1 이하: 100%
-    // - 4:1 초과 ~ 10:1 이하: 50%
-    // - 10:1 초과: 50%에서 시작해 비율 1 증가마다 1%씩 감소
-    //   예) 11:1=49%, 12:1=48%, 20:1=40%, 30:1=30%, 35:1=25%
-    var maxP=100;
-    if(ar>4) maxP=50;
-    if(ar>10){
-      maxP=50-Math.ceil(ar-10);
-    }
-
-    // 자동 전용 구간도 너무 낮아져 캔버스가 사라지지 않도록 1% 하한만 둔다.
-    maxP=Math.max(1, Math.min(100, maxP));
-    return maxP;
+    return window.dpcFrameResolutionEnvelope(rw,rh).maxPercent;
   }
   function requestedPercent(){
     var sel=E('blankResPreset');
@@ -9272,6 +9286,18 @@ function orientSheetRecommendation(c,r,rw,rh,fromFlow,toFlow){
  return {c:nextC,r:nextR,rw:best[0],rh:best[1]};
 }
 
+/* 자주 쓰는 가로 5x4는 셀 비례 보존식만 적용하면 2:1에 가까워진다.
+ * 일반 이미지 시트의 표준 문서 규격은 16:9를 권위로 삼고,
+ * 텍스트 여백 ON에서는 동일한 20칸 기준이 5x2로 변환된다. */
+function applyStandardHorizontalSheetRatio(rec,isUltra){
+ if(!rec || isUltra) return rec;
+ if(rec.flow==='horizontal' && Number(rec.c)===5 && Number(rec.r)===4){
+   rec.rw=16;
+   rec.rh=9;
+ }
+ return rec;
+}
+
 /* 외곽·간격 추천 공통식.
  * 단계값은 기존 40/60/100/150 규칙을 유지하고, 판단 컷 수만 현재
  * 최종 규격의 한 페이지 수용량으로 제한한다. */
@@ -9283,11 +9309,45 @@ function recommendedSheetSpacing(totalCount,cols,rows,isUltra){
  return 150;
 }
 
+/* 프레임·외곽·간격의 픽셀 기본값은 실제 배치와 같은 1번 컷 기준축을 쓴다.
+ * 가로 배치는 높이(960x540의 540px=1배), 세로 배치는 너비(960px=1배)다.
+ * 옵션값은 프레임 해상도 안전 상한 안의 논리 픽셀(540→6, 1080→12)이며,
+ * 최종 렌더러가 배치용 프레임 크기와 모든 장식값을 같은 배율로 처리한다. */
+function recommendedSheetPixelDefaults(baseSpacing){
+ const first=(Array.isArray(items)&&items.length)?items[0]:null;
+ let w=Number(first&&(first.originalWidth||first.width||first.w))||0;
+ let h=Number(first&&(first.originalHeight||first.height||first.h))||0;
+ const isInitialAutoBlank=!!(first&&first.type==='blank'&&(
+   window.__fsDefaultBlankAutoUsed||window.__fsInitialBlankSheetUsed||window.__fsInitialLiteralBlankOkUsed
+ ));
+ /* 초기 자동 빈프레임의 논리 해상도는 현재 모달 기본값(960x540)이다.
+    또한 아직 디코딩되지 않은 일반 빈프레임도 모달의 실제 생성 해상도를 사용한다. */
+ if(first&&first.type==='blank'&&(isInitialAutoBlank||!w||!h)){
+   const pxW=document.getElementById('blankPxW');
+   const pxH=document.getElementById('blankPxH');
+   w=Number(pxW&&pxW.value)||w||960;
+   h=Number(pxH&&pxH.value)||h||540;
+ }
+ if(!(w>0&&h>0)){ w=960; h=540; }
+ const flowValue=((document.getElementById('flow')||{}).value==='horizontal')?'horizontal':'vertical';
+ const envelope=window.dpcFrameResolutionEnvelope(w,h);
+ const sourceAuthority=flowValue==='horizontal'?h:w;
+ const safeAuthority=flowValue==='horizontal'?envelope.safeH:envelope.safeW;
+ const referenceAuthority=flowValue==='horizontal'?540:960;
+ const scale=Math.max(1/6,Math.min(sourceAuthority,safeAuthority)/referenceAuthority);
+ /* 모든 결과를 정수 픽셀로 확정해 캔버스 경계에서 안티앨리어싱이 생기지 않게 한다. */
+ return {
+   frame:Math.max(1,Math.round(6*scale)),
+   spacing:Math.max(1,Math.round(Math.max(0,Number(baseSpacing)||0)*scale))
+ };
+}
+
 function recommend(request){
  if(!autoMode) return;
  const linked=!!(request&&request.__sheetLinkedRecommendation===true);
  const preserveLayout=linked&&request.preserveLayout===true;
  const preserveRatio=linked&&request.preserveRatio===true;
+ const rebaseTextMargin=linked&&request.rebaseTextMargin===true;
  const requestedCount=linked?parseInt(request.countOverride,10):0;
  const n=requestedCount>0?requestedCount:items.length;
  if(!n) return;
@@ -9488,15 +9548,33 @@ function recommend(request){
    nextFlow=userFlowOverride;
  }
 
+ /* 방향 회전식 뒤에 표준 가로 시트 규칙을 한 번만 적용한다.
+    이후 텍스트 여백 변환은 비율을 건드리지 않고 5x4만 5x2로 줄인다. */
+ {
+   const standard=applyStandardHorizontalSheetRatio(
+     {c:c,r:r,rw:rw,rh:rh,flow:nextFlow},
+     isUltra
+   );
+   rw=standard.rw;
+   rh=standard.rh;
+ }
+
  const keepLayout=preserveLayout||isSheetLayoutLocked();
  const keepRatio=preserveRatio||isSheetRatioLocked();
  if(document.getElementById('textMarginOn')?.checked && !keepLayout){
    /* 텍스트 여백 규격은 언제나 ON 직전의 일반 규격을 한 번만 변환한다.
       생성 직전 recommend()가 이미 변환된 화면 규격을 다시 절반으로 줄이지 않도록
       토글이 보관한 기준 규격을 단일 원본으로 사용한다. */
-   const textBase=window.__dpcTextMarginBaseLayout;
+   const textBase=rebaseTextMargin?null:window.__dpcTextMarginBaseLayout;
    const normalC=textBase ? textBase.c : c;
    const normalR=textBase ? textBase.r : r;
+   if(rebaseTextMargin){
+     window.__dpcTextMarginBaseLayout={
+       c:normalC,r:normalR,flow:nextFlow,
+       purpose:(typeof window.dpcGetSheetPurposeMode==='function')?window.dpcGetSheetPurposeMode():'image',
+       manual:false,dirty:false
+     };
+   }
    const textLayout=textMarginLayoutRecommendation(n,normalC,normalR,rw,rh,nextFlow);
    c=textLayout.c;
    r=textLayout.r;
@@ -9527,8 +9605,11 @@ function recommend(request){
  const spacingCols=preserveLayout&&requestedSpacingCols>0?requestedSpacingCols:c;
  const spacingRows=preserveLayout&&requestedSpacingRows>0?requestedSpacingRows:r;
  const pageSpacing=recommendedSheetSpacing(spacingCount,spacingCols,spacingRows,isUltra);
- document.getElementById('margin').value=pageSpacing;
- document.getElementById('frameGap').value=pageSpacing;
+ const pixelDefaults=recommendedSheetPixelDefaults(pageSpacing);
+ document.getElementById('margin').value=pixelDefaults.spacing;
+ document.getElementById('frameGap').value=pixelDefaults.spacing;
+ const frameSizeInput=document.getElementById('frameSize');
+ if(frameSizeInput&&!window.__sheetUserEditedFrameSize) frameSizeInput.value=pixelDefaults.frame;
  syncFrameSheetOptionLabels();
 }
 
@@ -10467,8 +10548,8 @@ render=function(options){
     ['ratioW','ratioH','colsInput','rowsInput','flow','margin','frameGap','bgColor','frameOn','frameSize','fitMode','lockRatio','lockLayout'].forEach(function(id){
       var x=E(id);
       if(x && !x.__fsCurrentUiDirtyHookClean){
-        x.addEventListener('input', function(){ window.__fsCurrentUiDirty=true; if(id==='margin') window.__sheetUserEditedMargin=true; if(id==='frameGap') window.__sheetUserEditedGap=true; }, true);
-        x.addEventListener('change', function(){ window.__fsCurrentUiDirty=true; if(id==='margin') window.__sheetUserEditedMargin=true; if(id==='frameGap') window.__sheetUserEditedGap=true; }, true);
+        x.addEventListener('input', function(){ window.__fsCurrentUiDirty=true; if(id==='margin') window.__sheetUserEditedMargin=true; if(id==='frameGap') window.__sheetUserEditedGap=true; if(id==='frameSize') window.__sheetUserEditedFrameSize=true; }, true);
+        x.addEventListener('change', function(){ window.__fsCurrentUiDirty=true; if(id==='margin') window.__sheetUserEditedMargin=true; if(id==='frameGap') window.__sheetUserEditedGap=true; if(id==='frameSize') window.__sheetUserEditedFrameSize=true; }, true);
         x.__fsCurrentUiDirtyHookClean=true;
       }
     });
@@ -10719,6 +10800,10 @@ render=function(options){
   window.syncSheetRecommendationFromLayout=syncRecommendationFromLayout;
   function syncRecommendationAfterUnlock(kind){
     if(typeof recommend!=='function') return;
+    /* 추천할 실제 프레임이 없는 초기 화면에서는 잠금 체크가 값 변경 명령이 아니다.
+       현재 문서 기본값(16:9, 5x2) 또는 사용자가 입력한 값을 그대로 유지한다. */
+    var sourceItems=(typeof items!=='undefined'&&Array.isArray(items))?items:[];
+    if(sourceItems.length===0) return;
     if(kind==='ratio'){
       /* 시트 비율 고정 해제: 현재 규격이 권한이며 추천 비율만 복귀한다. */
       var c=positiveValue('colsInput'), r=positiveValue('rowsInput');
@@ -10785,17 +10870,11 @@ render=function(options){
   function n(v,d){ v=parseFloat(String(v||'').trim()); return (isFinite(v)&&v>0)?v:d; }
   function i(v,d){ v=parseInt(String(v||''),10); return (isFinite(v)&&v>0)?v:d; }
   function baseSize(rw,rh){
-    var w,h;
-    if(rw<rh){ w=1080; h=Math.round(1080*(rh/rw)); }
-    else{ h=1080; w=Math.round(1080*(rw/rh)); }
-    return {w:w,h:h,ar:Math.max(rw/rh,rh/rw)};
+    var e=window.dpcFrameResolutionEnvelope(rw,rh);
+    return {w:e.baseW,h:e.baseH,ar:e.aspect};
   }
   function smoothMaxPercent(rw,rh){
-    var ar=baseSize(rw,rh).ar;
-    var p=100;
-    if(ar>4) p=50;
-    if(ar>10) p=50-Math.ceil(ar-10);
-    return Math.max(1, Math.min(100, p));
+    return window.dpcFrameResolutionEnvelope(rw,rh).maxPercent;
   }
   function ensureResOption(v){
     var sel=E('blankResPreset'); if(!sel) return;
@@ -11630,17 +11709,21 @@ body.__sheet_processing #make.sheetBtn:focus{
     var mixLab=document.createElement('label'); mixLab.className='dpc-adv-check'; mixLab.appendChild(mix); mixLab.appendChild(document.createTextNode('프레임 비율 혼합'));
     r1.appendChild(mixLab);
 
+    function residualCropAllowed(){
+      return !(typeof window.dpcGetSheetPurposeMode==='function' && window.dpcGetSheetPurposeMode()==='document');
+    }
+    window.dpcResidualOuterCropAllowed=residualCropAllowed;
     function syncCropByRule(){
       var isGap=!!gapRadio.checked;
-      crop.disabled=!isGap;
-      if(isGap){
-        // 간격 기준을 선택할 때는 잔여 외곽 크롭을 기본 ON으로 복귀시킨다.
-        crop.checked=true;
-      }else{
-        // 외곽 기준에서는 크롭 개념을 비활성화하고 추천 시트 비율로 복귀한다.
+      var cropAllowed=residualCropAllowed();
+      crop.disabled=!cropAllowed || !isGap;
+      if(!cropAllowed || !isGap){
+        /* 문서 모드는 16:9/A4 같은 페이지 비율이 결과의 권위다.
+           실제 콘텐츠 경계로 캔버스를 잘라 비율을 바꾸는 잔여 외곽
+           크롭은 이미지 모드의 간격 우선에서만 사용할 수 있다. */
         crop.checked=false;
       }
-      if(cropLab) cropLab.classList.toggle('is-disabled', !isGap);
+      if(cropLab) cropLab.classList.toggle('is-disabled', crop.disabled);
     }
 
     var r2=document.createElement('div'); r2.className='dpc-adv-row dpc-adv-row-2';
@@ -11706,21 +11789,41 @@ body.__sheet_processing #make.sheetBtn:focus{
     var numberLab=document.createElement('label'); numberLab.className='dpc-adv-check dpc-cut-number-check';
     numberLab.appendChild(cutNumberOn); numberLab.appendChild(document.createTextNode('컷 넘버링'));
     var insideLab=document.createElement('label'); insideLab.className='dpc-adv-radio dpc-cut-number-position';
-    insideLab.appendChild(cutNumberInside); insideLab.appendChild(document.createTextNode('안쪽'));
+    cutNumberInside.setAttribute('aria-label','컷 넘버 안쪽');
+    insideLab.appendChild(cutNumberInside); insideLab.appendChild(document.createTextNode('IN'));
     var outsideLab=document.createElement('label'); outsideLab.className='dpc-adv-radio dpc-cut-number-position';
-    outsideLab.appendChild(cutNumberOutside); outsideLab.appendChild(document.createTextNode('바깥쪽'));
+    cutNumberOutside.setAttribute('aria-label','컷 넘버 바깥쪽');
+    outsideLab.appendChild(cutNumberOutside); outsideLab.appendChild(document.createTextNode('OUT'));
     r4.appendChild(numberLab); r4.appendChild(insideLab); r4.appendChild(outsideLab);
+    /* OUT은 텍스트 여백이 있을 때만 사용할 수 있지만, 여백을 잠시 끈 것은
+       사용자의 IN/OUT 선호 변경이 아니다. 사용 가능 여부와 선호를 분리한다. */
+    var cutNumberPrefersOutside=!!cutNumberOutside.checked;
     function syncCutNumberControls(){
       var enabled=!!cutNumberOn.checked;
+      var outsideAvailable=enabled && !!textMarginOn.checked;
+      /* 문서 모드 적용처럼 외부 코드가 OUT을 직접 지정한 경우도 선호로 기억한다. */
+      if(cutNumberOutside.checked) cutNumberPrefersOutside=true;
       cutNumberInside.disabled=!enabled;
-      cutNumberOutside.disabled=!enabled || !textMarginOn.checked;
-      if(cutNumberOutside.disabled && cutNumberOutside.checked) cutNumberInside.checked=true;
+      cutNumberOutside.disabled=!outsideAvailable;
+      if(!outsideAvailable && cutNumberOutside.checked){
+        cutNumberOutside.checked=false;
+        cutNumberInside.checked=true;
+      }else if(outsideAvailable && cutNumberPrefersOutside){
+        cutNumberInside.checked=false;
+        cutNumberOutside.checked=true;
+      }
       insideLab.classList.toggle('is-disabled',!enabled);
-      outsideLab.classList.toggle('is-disabled',!enabled || !textMarginOn.checked);
+      outsideLab.classList.toggle('is-disabled',!outsideAvailable);
     }
     window.dpcSyncMarginRuleControls=syncCropByRule;
     window.dpcSyncCutNumberControls=syncCutNumberControls;
     cutNumberOn.onchange=syncCutNumberControls;
+    cutNumberInside.addEventListener('change',function(){
+      if(cutNumberInside.checked) cutNumberPrefersOutside=false;
+    });
+    cutNumberOutside.addEventListener('change',function(){
+      if(cutNumberOutside.checked) cutNumberPrefersOutside=true;
+    });
     function applyAutomaticTextMarginBalance(recommendLayout){
       if(!textMarginOn.checked) return;
       if(recommendLayout && !document.getElementById('lockLayout')?.checked){
@@ -11736,31 +11839,60 @@ body.__sheet_processing #make.sheetBtn:focus{
     }
     textMarginOn.onchange=function(){
       var layoutLocked=!!document.getElementById('lockLayout')?.checked;
-      if(!layoutLocked){
-        if(textMarginOn.checked){
-          /* ON은 현재 규격을 '일반 시트 기준 규격'으로 받아 절반 수용량의
-             텍스트 규격으로 변환한다. 수동 편집 플래그는 변환을 막지 않고,
-             명시적인 규격 고정만 변환을 막는다. */
+      var purpose=(typeof window.dpcGetSheetPurposeMode==='function')?window.dpcGetSheetPurposeMode():'image';
+      if(textMarginOn.checked){
+        /* 규격 고정 여부와 관계없이 ON 직전의 일반 규격을 한 번만 저장한다.
+           고정 상태에서 이 기준을 누락하면 해제할 때 현재 규격을 다시 절반으로
+           줄여 4x5 -> 2x5 -> 1x5가 되는 중복 변환이 발생한다. */
+        if(!window.__dpcTextMarginBaseLayout){
           var baseC=Math.max(1,parseInt(E('colsInput')&&E('colsInput').value,10)||1);
           var baseR=Math.max(1,parseInt(E('rowsInput')&&E('rowsInput').value,10)||1);
           window.__dpcTextMarginBaseLayout={
             c:baseC,r:baseR,
             flow:(E('flow')&&E('flow').value)||'vertical',
+            purpose:purpose,
             manual:!!window.__sheetUserEditedLayout,
             dirty:!!window.__fsCurrentUiDirty
           };
+        }
+        /* 규격 고정은 화면 규격을 유지한다. 해제 상태에서만 저장된 원본으로
+           텍스트 여백용 규격을 계산한다. */
+        if(!layoutLocked){
           applyAutomaticTextMarginBalance(true);
-        }else{
+        }
+      }else{
+        if(!layoutLocked){
           var base=window.__dpcTextMarginBaseLayout;
           if(base){
-            E('colsInput').value=String(base.c); E('rowsInput').value=String(base.r);
-            window.__sheetUserEditedLayout=!!base.manual;
-            window.__fsCurrentUiDirty=!!base.dirty;
+            var sourceItems=(typeof items!=='undefined'&&Array.isArray(items))?items:[];
+            /* 이미지 모드에서 추천 복귀를 막는 권한은 규격 고정뿐이다.
+               수동 입력 이력(base.manual)은 추천을 영구 차단하지 않는다. */
+            var autoImageLayout=purpose==='image' && sourceItems.length>0;
+            /* OFF가 한 주기의 끝이다. 원본 스냅샷을 폐기해야 다음 ON이
+               새 일반 추천 규격에서 정확히 한 번만 변환된다. */
             window.__dpcTextMarginBaseLayout=null;
+            if(autoImageLayout && typeof recommend==='function'){
+              /* 컷이 있는 이미지 모드에서 OFF는 일반 추천의 초기 상태로
+                 돌아간다. 현재 컷 수·프레임 비율을 기준으로 시트와 규격을
+                 함께 다시 추천한다. */
+              window.__sheetUserEditedLayout=false;
+              window.__fsCurrentUiDirty=false;
+              recommend({
+                __sheetLinkedRecommendation:true,
+                countOverride:sourceItems.length,
+                spacingCountOverride:sourceItems.length
+              });
+            }else{
+              /* 컷이 없거나 문서 모드인 경우에만 ON 이전 값을 복원한다.
+                 규격 고정은 상위 layoutLocked 분기에서 숫자를 그대로 유지한다. */
+              E('colsInput').value=String(base.c); E('rowsInput').value=String(base.r);
+              window.__sheetUserEditedLayout=!!base.manual;
+              window.__fsCurrentUiDirty=!!base.dirty;
+            }
           }
-          /* 생성 완료로 스냅샷이 폐기된 상태에서는 현재 생성 규격을 그대로 유지한다.
-             일반 추천을 다시 실행하거나 과거 결과 이전의 규격으로 돌아가지 않는다. */
         }
+        /* 고정 중에는 표시 규격을 바꾸지 않으며, 기존 원본 기준도 보존한다.
+           다시 ON하거나 고정을 해제해도 같은 기준에서 정확히 한 번만 변환한다. */
       }
       syncCutNumberControls();
       if(typeof syncFrameSheetOptionLabels==='function') syncFrameSheetOptionLabels();
@@ -11778,6 +11910,10 @@ body.__sheet_processing #make.sheetBtn:focus{
       if(outerRadio.checked && typeof window.dpcRestoreRecommendedRatioAfterCrop==='function') window.dpcRestoreRecommendedRatioAfterCrop();
     });
     gapRadio.addEventListener('change', function(){
+      /* 사용자가 간격 우선을 직접 선택한 순간에는 편의상 크롭을 기본 ON한다.
+         이후의 텍스트 여백 변경/모드 동기화는 syncCropByRule만 호출하므로,
+         사용자가 크롭을 다시 OFF한 선택을 덮어쓰지 않는다. */
+      if(gapRadio.checked && residualCropAllowed()) crop.checked=true;
       syncCropByRule();
     });
     crop.addEventListener('change', function(){
@@ -12186,18 +12322,31 @@ body.__sheet_processing #make.sheetBtn:focus{
   #advancedOptions #dpcAdvClean .dpc-adv-row-2{gap:7px!important;}
   #advancedOptions #dpcAdvClean .dpc-adv-row-4{
     display:grid!important;
-    grid-template-columns:max-content max-content!important;
+    grid-template-columns:max-content max-content max-content max-content!important;
     justify-content:start!important;
-    column-gap:14px!important;
-    row-gap:8px!important;
-    white-space:normal!important;
+    column-gap:8px!important;
+    row-gap:0!important;
+    white-space:nowrap!important;
   }
   #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-text-margin-check{min-width:0!important;margin-right:0!important;}
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-adv-check,
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-cut-number-position{
+    flex:0 0 auto!important;
+    min-width:max-content!important;
+    white-space:nowrap!important;
+  }
   #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-cut-number-position{gap:3px!important;}
 }
 @media(max-width:380px){
   #advancedOptions #dpcAdvClean .dpc-adv-row-2{gap:5px!important;}
   #advancedOptions #dpcAdvClean input[type="number"]{width:48px!important;min-width:48px!important;max-width:48px!important;}
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4{column-gap:6px!important;}
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-adv-check,
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 .dpc-adv-radio{font-size:14px!important;}
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 input[type="checkbox"],
+  #advancedOptions #dpcAdvClean .dpc-adv-row-4 input[type="radio"]{
+    width:18px!important;height:18px!important;min-width:18px!important;max-width:18px!important;min-height:18px!important;max-height:18px!important;flex-basis:18px!important;
+  }
 }
 </style>
 
@@ -12742,6 +12891,17 @@ body.__sheet_processing #make.sheetBtn:focus{
     w=Math.max(1,Math.ceil(w||1)); h=Math.max(1,Math.ceil(h||1));
     return Math.min(1,maxSide/w,maxSide/h,Math.sqrt(maxPixels/(w*h)));
   }
+  /* 실제 원본 바이트와 배치 좌표계의 해상도를 분리한다.
+     고해상도 원본은 PPTX에 그대로 보존하되, 시트 배치는 기존 프레임 방향별
+     최대 해상도(가로형 높이 1080 / 세로형 너비 1080 및 초장축 제한) 안에서
+     계산한다. 이렇게 해야 옵션의 6/12px과 실제 컷 크기가 같은 좌표계를 쓴다. */
+  function layoutReferenceDimensions(item){
+    var h=Math.max(1,Number(item&&item.height)||540);
+    var w=Math.max(1,Number(item&&item.width)||Math.round(h*rawRatio(item))||960);
+    var envelope=window.dpcFrameResolutionEnvelope(w,h);
+    var scale=Math.min(1,envelope.safeW/w,envelope.safeH/h);
+    return {w:w*scale,h:h*scale,scale:scale};
+  }
   function effectiveGap(raw,fs){
     raw=String(raw==null?'':raw).trim();
     if(raw==='') return fs>0 ? -fs : 0;
@@ -12755,7 +12915,9 @@ body.__sheet_processing #make.sheetBtn:focus{
     var gx=baseGap, gy=baseGap;
     var w=cols*lcw+(cols-1)*gx+outer*2, h=rows*lch+(rows-1)*gy+outer*2;
     var ruleEl=document.querySelector('input[name="dpcMarginRule"]:checked'); var rule=ruleEl?ruleEl.value:'outer';
-    var crop=E('dpcCropResidualOuter'); var cropOn=!!(crop && crop.checked && !crop.disabled && rule==='gap');
+    var crop=E('dpcCropResidualOuter');
+    var cropAllowed=typeof window.dpcResidualOuterCropAllowed!=='function' || window.dpcResidualOuterCropAllowed();
+    var cropOn=!!(cropAllowed && crop && crop.checked && !crop.disabled && rule==='gap');
     if(cropOn) return {W:Math.ceil(w),H:Math.ceil(h),gx:gx,gy:gy,cropped:true,center:false};
     /* 텍스트 여백 유무와 관계없이 동일한 우선순위 규칙을 사용한다.
        간격 우선만 입력 gap을 확정값으로 유지하고 남는 외곽을 균등 배분한다. */
@@ -12855,16 +13017,11 @@ body.__sheet_processing #make.sheetBtn:focus{
       return out;
     }
     if(isMixOn()){
-      var mixedBase=recommendedOptForBucket(representativeLabelFor(data),data.length);
-      var mixedTarget=textLayoutOn
-        ? Math.min(data.length,Math.max(1,mixedBase.c*mixedBase.r))
-        : Math.min(data.length,capFor(data));
-      var mixedRec=fitLayoutToTarget(mixedBase,mixedTarget,data);
-      if(visibleSelection){
-        return [{key:'__mixed__',list:data.slice(),opt:applyVisibleSelection(mixedRec)}];
-      }
-      var opt=applyLocks(mixedRec);
-      return [{key:'__mixed__',list:data.slice(),opt:opt}];
+      /* 비율 혼합 ON은 현재 화면의 한 시트 설정으로 모든 컷을 함께
+         배치하는 모드다. 업로드/옵션 변경 단계에서 추천은 이미 끝났으므로
+         SHEET 클릭 시 임시 컷으로 recommend()를 다시 실행하지 않는다.
+         수동 편집 여부와 관계없이 클릭 순간 표시된 비율·규격이 결과 권위다. */
+      return [{key:'__mixed__',list:data.slice(),opt:applyVisibleSelection(manualOpt)}];
     }
     var out=[],cur=null,lastKey=null;
     data.forEach(function(it){
@@ -12873,13 +13030,17 @@ body.__sheet_processing #make.sheetBtn:focus{
       cur.list.push(it);
     });
     out.forEach(function(g){
+      /* 생성 버튼은 추천기가 아니다. 클릭 순간 화면값이 확정되어 있으면
+         임시 컷으로 recommend()를 다시 실행하지 않고 그대로 소비한다.
+         추천과 생성을 분리해야 방향·텍스트 토글의 이전 페이지 수용량이
+         현재 5x6 같은 표시 규격에 섞이지 않는다. */
+      if(visibleSelection){ g.opt=applyVisibleSelection(manualOpt); return; }
       var label=representativeLabelFor(g.list);
       var baseRec=recommendedOptForBucket(label,g.list.length);
       var groupTarget=textLayoutOn
         ? Math.min(g.list.length,Math.max(1,baseRec.c*baseRec.r))
         : Math.min(g.list.length,capFor(g.list));
       var rec=fitLayoutToTarget(baseRec,groupTarget,g.list);
-      if(visibleSelection){ g.opt=applyVisibleSelection(rec); return; }
       g.opt=applyLocks(rec);
     });
     return out;
@@ -12901,7 +13062,8 @@ body.__sheet_processing #make.sheetBtn:focus{
        전체 규격을 유지하는 일반 경로만 공통 페이지 계획을 공유한다. */
     var rule=document.querySelector('input[name="dpcMarginRule"]:checked');
     var crop=E('dpcCropResidualOuter');
-    if(crop && crop.checked && !crop.disabled && rule && rule.value==='gap') return null;
+    var cropAllowed=typeof window.dpcResidualOuterCropAllowed!=='function' || window.dpcResidualOuterCropAllowed();
+    if(cropAllowed && crop && crop.checked && !crop.disabled && rule && rule.value==='gap') return null;
     var cols=Math.max(1,opt.c), rows=Math.max(1,opt.r);
     var fs=(E('frameOn')&&E('frameOn').checked)?int0(gv('frameSize',6),6):0;
     var textEnabled=!!(E('textMarginOn')&&E('textMarginOn').checked);
@@ -12914,8 +13076,8 @@ body.__sheet_processing #make.sheetBtn:focus{
     await ensureDim(refItem);
     var cutMode=gv('cutSizeMode','auto')||'auto';
     if(cutMode==='auto') cutMode=opt.flow==='horizontal'?'height':'width';
-    var refH=Math.max(1,Number(refItem&&refItem.height)||540);
-    var refW=Math.max(1,Number(refItem&&refItem.width)||Math.round(refH*rawRatio(refItem))||960);
+    var refSize=layoutReferenceDimensions(refItem);
+    var refH=refSize.h, refW=refSize.w;
     var pageBoxes=[];
     for(var pi=0;pi<pageLists.length;pi++){
       var list=pageLists[pi], boxes=[];
@@ -12934,10 +13096,9 @@ body.__sheet_processing #make.sheetBtn:focus{
         ? {col:i%cols,row:Math.floor(i/cols)}
         : {row:i%rows,col:Math.floor(i/rows)};
     }
-    /* 각 페이지의 열·행 크기는 그 페이지 컷으로만 계산한다.
-       채워진 행/열은 그 안의 실제 컷만 기준으로 삼고, 완전히 빈 행/열만
-       기준 컷 크기를 사용한다. 따라서 와이드 컷만 있는 행은 불필요하게
-       기준 컷 높이까지 늘어나지 않으며 모든 컷의 원본 비율이 유지된다. */
+        /* 각 페이지의 열·행 트랙은 자연 크기를 기록하는 보조 계획이다.
+           실제 배치는 고정 시트 안에서 가로는 행 단위, 세로는 열 단위로 다시 풀어
+           먼저 간격을 줄이고, 최소 간격에서도 넘칠 때만 해당 행/열 전체를 등비 축소한다. */
     function pageGridAtRate(boxes,rate){
       var base=textCompositeDimensions(textEnabled,side,rate,fs,baseRaw.ar,baseRaw.imageW,baseRaw.imageH);
       var widths=new Array(cols).fill(0);
@@ -12975,12 +13136,21 @@ body.__sheet_processing #make.sheetBtn:focus{
     }
     /* 한 페이지의 자연 크기를 구한다. 이미지/텍스트 복합 셀은 반드시
        동일한 geometryScale로만 줄여 종횡비를 보존한다. */
+    function scaledLayoutPixels(geometryScale){
+      geometryScale=Math.max(.000001,Math.min(1,Number(geometryScale)||1));
+      return {
+        fs:fs>0?Math.max(1,Math.round(fs*geometryScale)):0,
+        gap:Math.round(gap*geometryScale),
+        margin:Math.round(margin*geometryScale)
+      };
+    }
     function guardedCanvasFor(boxes,geometryScale){
       var pageGrid=pageGridAtRate(boxes,grid.rate);
       var scaledW=pageGrid.colW.map(function(v){return v*geometryScale;});
       var scaledH=pageGrid.rowH.map(function(v){return v*geometryScale;});
-      var naturalW=scaledW.reduce(function(a,b){return a+b;},0)+cols*fs*2+(cols-1)*gap+margin*2;
-      var naturalH=scaledH.reduce(function(a,b){return a+b;},0)+rows*fs*2+(rows-1)*gap+margin*2;
+      var px=scaledLayoutPixels(geometryScale);
+      var naturalW=scaledW.reduce(function(a,b){return a+b;},0)+cols*px.fs*2+(cols-1)*px.gap+px.margin*2;
+      var naturalH=scaledH.reduce(function(a,b){return a+b;},0)+rows*px.fs*2+(rows-1)*px.gap+px.margin*2;
       if(naturalW/naturalH>targetRatio) naturalH=naturalW/targetRatio;
       else if(naturalW/naturalH<targetRatio) naturalW=naturalH*targetRatio;
       return {w:naturalW,h:naturalH};
@@ -13002,10 +13172,12 @@ body.__sheet_processing #make.sheetBtn:focus{
       else templateW=templateH*targetRatio;
       return {W:Math.ceil(templateW),H:Math.ceil(templateH)};
     }
+    var outputPixels=scaledLayoutPixels(geometryScale);
     return {
       cols:cols,rows:rows,rate:grid.rate,geometryScale:geometryScale,
+      frameSize:outputPixels.fs,gap:outputPixels.gap,margin:outputPixels.margin,
       template:templateAtScale(geometryScale),templateAtScale:templateAtScale,
-      /* 뒤 페이지에서 이 크기를 넘는 컷만 개별 등비 축소한다. */
+          /* 첫 페이지의 트랙과 고정 시트 크기를 후속 페이지가 공유한다. */
       trackCapacity:{
         colW:grid.colW.map(function(v){return v*geometryScale;}),
         rowH:grid.rowH.map(function(v){return v*geometryScale;})
@@ -13058,7 +13230,8 @@ body.__sheet_processing #make.sheetBtn:focus{
     var ruleElForDraw=document.querySelector('input[name="dpcMarginRule"]:checked');
     var isGapRule=!!(ruleElForDraw && ruleElForDraw.value==='gap');
     var cropElForDraw=E('dpcCropResidualOuter');
-    var cropResidual=!!(cropElForDraw && cropElForDraw.checked && !cropElForDraw.disabled && isGapRule);
+    var cropAllowedForDraw=typeof window.dpcResidualOuterCropAllowed!=='function' || window.dpcResidualOuterCropAllowed();
+    var cropResidual=!!(cropAllowedForDraw && cropElForDraw && cropElForDraw.checked && !cropElForDraw.disabled && isGapRule);
     var cropped=false, center=false, gx=gap, gy=gap;
 
     var solveCols=cols, solveRows=rows;
@@ -13159,13 +13332,21 @@ body.__sheet_processing #make.sheetBtn:focus{
       await ensureDim(refItem);
       var cutMode=gv('cutSizeMode','auto')||'auto';
       if(cutMode==='auto') cutMode=(opt.flow==='horizontal')?'height':'width';
-      var refH=Math.max(1,Number(refItem && refItem.height)||540);
-      var refW=Math.max(1,Number(refItem && refItem.width)||Math.round(refH*rawRatio(refItem))||960);
+      var refSize=layoutReferenceDimensions(refItem);
+      var refH=refSize.h, refW=refSize.w;
+      var usingSharedPlan=!!(sharedPixelBasis && sharedPixelBasis.cols===layoutCols && sharedPixelBasis.rows===layoutRows);
+      var sharedGeometryScale=usingSharedPlan?Math.max(.000001,Math.min(1,Number(sharedPixelBasis.geometryScale)||1)):1;
+      if(usingSharedPlan){
+        fs=Math.max(0,Number(sharedPixelBasis.frameSize)||0);
+        gap=Number(sharedPixelBasis.gap)||0;
+        margin=Number(sharedPixelBasis.margin)||0;
+      }
       var rawImageBoxes=list.map(function(it){
         var ar=Math.max(0.0001,rawRatio(it));
         var imageW,imageH;
         if(cutMode==='width'){ imageW=refW; imageH=Math.max(1,refW/ar); }
         else{ imageW=Math.max(1,refH*ar); imageH=refH; }
+        if(usingSharedPlan){ imageW*=sharedGeometryScale; imageH*=sharedGeometryScale; }
         return {ar:ar,imageW:imageW,imageH:imageH};
       });
       /* 비율, 셀, 캔버스가 서로 다른 경로에서 다시 계산되지 않도록
@@ -13191,7 +13372,6 @@ body.__sheet_processing #make.sheetBtn:focus{
         return {rate:textMarginRate,boxes:boxes,colW:widths,rowH:heights,ratio:naturalW/naturalH};
       }
       var grid;
-      var usingSharedPlan=!!(sharedPixelBasis && sharedPixelBasis.cols===layoutCols && sharedPixelBasis.rows===layoutRows);
       if(usingSharedPlan){
         textMarginRate=Math.max(1,Number(sharedPixelBasis.rate)||1);
         /* 공통 기준은 배율과 텍스트 비율뿐이다. 열·행 크기는 현재 페이지의
@@ -13219,20 +13399,23 @@ body.__sheet_processing #make.sheetBtn:focus{
       }
       var itemBoxes=grid.boxes, colW=grid.colW, rowH=grid.rowH;
       var sol=solveGridPlan(colW,rowH,gap,margin,targetRatio);
-      var sharedGeometryScale=usingSharedPlan?Math.max(.000001,Math.min(1,Number(sharedPixelBasis.geometryScale)||1)):1;
       /* 공통 계획이 있으면 모바일 캔버스 상한은 첫 페이지에서 이미 한 번
          확정됐다. 현재 페이지의 임시 자연 크기에 다시 적용하면 3페이지처럼
          실제로는 고정 시트에 들어오는 페이지까지 불필요하게 축소된다. */
       var scale=usingSharedPlan
-        ? sharedGeometryScale
+        ? 1
         : Math.min(1,canvasGuardScale(sol.W,sol.H));
       if(scale<1){
-        /* 캔버스 상한은 이미지/텍스트 영역 해상도에만 적용한다.
-           사용자가 지정한 프레임·간격·외곽 값은 최종 출력 픽셀 값이므로
-           소수로 축소하지 않는다. 같은 계획을 쓰는 모든 페이지가 동일 배율을 쓴다. */
+        /* 캔버스 상한은 배치 전체의 단일 출력 배율이다. 이미지/텍스트만
+           줄이고 프레임을 그대로 두면 같은 크기로 보이는 컷의 선 두께가
+           달라진다. 선·간격·외곽도 같은 배율로 줄인 뒤 정수 픽셀로 확정한다. */
         var sourceBoxes=itemBoxes.slice(), sourceColW=colW.slice(), sourceRowH=rowH.slice();
+        var sourceFs=fs, sourceGap=gap, sourceMargin=margin;
         var geometryScale=scale;
         function applyGeometryScaleOnce(){
+          fs=sourceFs>0?Math.max(1,Math.round(sourceFs*geometryScale)):0;
+          gap=Math.round(sourceGap*geometryScale);
+          margin=Math.round(sourceMargin*geometryScale);
           itemBoxes=sourceBoxes.map(function(b){
             return {w:b.w*geometryScale,h:b.h*geometryScale,imageW:b.imageW*geometryScale,imageH:b.imageH*geometryScale,side:b.side,band:b.band*geometryScale,separator:fs};
           });
@@ -13250,60 +13433,78 @@ body.__sheet_processing #make.sheetBtn:focus{
           applyGeometryScaleOnce();
         }
       }
-      var isolatedPositions=null;
-      /* 첫 페이지 뒤부터는 페이지 전체 그리드를 다시 풀지 않는다.
-         높이 기준은 행별 X축, 폭 기준은 열별 Y축만 독립 검사한다. */
-      if(usingSharedPlan && sharedPixelBasis.referenceLayout){
-        var referenceLayout=sharedPixelBasis.referenceLayout;
-        var capCols=referenceLayout.colW||[];
-        var capRows=referenceLayout.rowH||[];
-        var fixedTemplate=sharedPixelBasis.template;
-        var axisIsX=cutMode==='height';
-        var groupCount=axisIsX?layoutRows:layoutCols;
-        var referenceStarts=axisIsX?referenceLayout.colStarts:referenceLayout.rowStarts;
-        var crossStarts=axisIsX?referenceLayout.rowStarts:referenceLayout.colStarts;
-        var canvasAxis=axisIsX?fixedTemplate.W:fixedTemplate.H;
-        /* 예외 행/열은 정상 행의 좌표를 건드리지 않은 채 자체적으로만 맞춘다.
-           사용자가 정한 간격이 넉넉하면 프레임 두께만큼의 가시 간격까지 줄이고,
-           그래도 부족할 때에만 이 행/열의 컷을 등비 축소한다. gap=0/음수는
-           사용자가 명시한 값이므로 그대로 존중한다. */
-        var configuredGap=Math.max(-fs,Number(gap)||0);
-        var minimumGap=configuredGap>0?Math.min(configuredGap,Math.max(1,fs)):configuredGap;
-        isolatedPositions=new Array(itemBoxes.length);
-        function scaleCompositeBox(box,factor){
-          if(factor>=0.999999) return box;
-          return {w:box.w*factor,h:box.h*factor,imageW:box.imageW*factor,imageH:box.imageH*factor,
-            side:box.side,band:box.band*factor,separator:fs};
-        }
-        /* 두 번째 페이지부터도 모든 정상 컷은 첫 페이지의 슬롯 시작 좌표를
-           그대로 쓴다. 한 컷이 슬롯과 최소 간격을 넘을 때만 그 컷 하나를
-           등비 축소한다. 열/행 전체를 최소 간격으로 다시 묶거나 중앙 정렬하지 않는다. */
-        for(var isolatedIndex=0;isolatedIndex<itemBoxes.length;isolatedIndex++){
-          var isolatedAt=posForIndex(isolatedIndex);
-          var isolatedGroup=axisIsX?isolatedAt.row:isolatedAt.col;
-          var isolatedTrack=axisIsX?isolatedAt.col:isolatedAt.row;
-          if(isolatedGroup>=groupCount) continue;
-          var isolatedStart=Number(referenceStarts[isolatedTrack]);
-          var isolatedCross=Number(crossStarts[isolatedGroup]);
-          if(!Number.isFinite(isolatedStart)||!Number.isFinite(isolatedCross)) continue;
-          var nextReference=isolatedTrack+1<referenceStarts.length
-            ? Number(referenceStarts[isolatedTrack+1])-minimumGap
-            : canvasAxis-margin;
-          var availableContent=Math.max(1,nextReference-isolatedStart-fs*2);
-          var isolatedBox=itemBoxes[isolatedIndex];
-          var contentSize=axisIsX?isolatedBox.w:isolatedBox.h;
-          if(contentSize>availableContent+0.001){
-            itemBoxes[isolatedIndex]=scaleCompositeBox(isolatedBox,availableContent/contentSize);
+          var isolatedPositions=null;
+          function scaleCompositeBox(box,factor){
+            if(factor>=0.999999) return box;
+            return {w:box.w*factor,h:box.h*factor,imageW:box.imageW*factor,imageH:box.imageH*factor,
+              side:box.side,band:box.band*factor,separator:fs};
           }
-          isolatedPositions[isolatedIndex]=axisIsX
-            ? {x:isolatedStart,y:isolatedCross}
-            : {x:isolatedCross,y:isolatedStart};
-        }
-        /* 페이지 캔버스와 정상 행/열의 기준 트랙은 첫 페이지 값을 그대로 사용한다. */
-        colW=capCols.slice(); rowH=capRows.slice();
-        sol={W:fixedTemplate.W,H:fixedTemplate.H,gx:referenceLayout.gx,gy:referenceLayout.gy,
-          center:!!referenceLayout.center,cropped:false,sx:referenceLayout.sx,sy:referenceLayout.sy};
-      }
+          /* 고정 시트 안에서 가로 배치는 행, 세로 배치는 열을 하나의 적합 단위로 본다.
+             1차로 해당 행/열의 간격만 최소치까지 줄이고, 그래도 넘칠 때만 모든 컷을
+             같은 배율로 축소한다. 따라서 중간의 트인 비율이 이웃 컷 하나만 작게 만들지 않는다. */
+          function fitGroupsToFixedSheet(referenceLayout,fixedTemplate){
+            var axisIsX=cutMode==='height';
+            var groupCount=axisIsX?layoutRows:layoutCols;
+            var crossStarts=axisIsX?(referenceLayout.rowStarts||[]):(referenceLayout.colStarts||[]);
+            var canvasAxis=axisIsX?fixedTemplate.W:fixedTemplate.H;
+            var desiredGap=axisIsX?Number(referenceLayout.gx):Number(referenceLayout.gy);
+            if(!Number.isFinite(desiredGap)) desiredGap=Math.max(-fs,Number(gap)||0);
+            var configuredGap=Math.max(-fs,Number(gap)||0);
+            var minimumGap=configuredGap>0?Math.min(configuredGap,Math.max(1,fs)):configuredGap;
+            var positions=new Array(itemBoxes.length);
+            var axisStart=margin, axisEnd=canvasAxis-margin;
+            var availableAxis=Math.max(1,axisEnd-axisStart);
+            for(var groupIndex=0;groupIndex<groupCount;groupIndex++){
+              var members=[];
+              for(var itemIndex=0;itemIndex<itemBoxes.length;itemIndex++){
+                var at=posForIndex(itemIndex);
+                if((axisIsX?at.row:at.col)===groupIndex) members.push(itemIndex);
+              }
+              if(!members.length) continue;
+              var contentTotal=0;
+              for(var mi=0;mi<members.length;mi++){
+                var memberBox=itemBoxes[members[mi]];
+                contentTotal+=axisIsX?memberBox.w:memberBox.h;
+              }
+              var frameTotal=members.length*fs*2;
+              var localGap=desiredGap;
+              if(members.length>1){
+                var gapCapacity=(availableAxis-frameTotal-contentTotal)/(members.length-1);
+                localGap=Math.min(desiredGap,Math.max(minimumGap,gapCapacity));
+              }
+              var required=contentTotal+frameTotal+(members.length-1)*localGap;
+              if(required>availableAxis+0.001 && contentTotal>0){
+                localGap=minimumGap;
+                var scaledContent=Math.max(1,availableAxis-frameTotal-(members.length-1)*localGap);
+                var groupScale=Math.max(.000001,Math.min(1,scaledContent/contentTotal));
+                contentTotal=0;
+                for(var si=0;si<members.length;si++){
+                  var scaleIndex=members[si];
+                  itemBoxes[scaleIndex]=scaleCompositeBox(itemBoxes[scaleIndex],groupScale);
+                  contentTotal+=axisIsX?itemBoxes[scaleIndex].w:itemBoxes[scaleIndex].h;
+                }
+                required=contentTotal+frameTotal+(members.length-1)*localGap;
+              }
+              var cursor=isGapRule?(canvasAxis-required)/2:axisStart;
+              var cross=Number(crossStarts[groupIndex]);
+              if(!Number.isFinite(cross)) cross=margin;
+              for(var pi2=0;pi2<members.length;pi2++){
+                var positionedIndex=members[pi2], positionedBox=itemBoxes[positionedIndex];
+                positions[positionedIndex]=axisIsX?{x:cursor,y:cross}:{x:cross,y:cursor};
+                cursor+=(axisIsX?positionedBox.w:positionedBox.h)+fs*2+localGap;
+              }
+            }
+            return positions;
+          }
+          if(usingSharedPlan && sharedPixelBasis.referenceLayout){
+            var referenceLayout=sharedPixelBasis.referenceLayout;
+            var fixedTemplate=sharedPixelBasis.template;
+            isolatedPositions=fitGroupsToFixedSheet(referenceLayout,fixedTemplate);
+            /* 페이지 캔버스와 교차축 트랙은 첫 페이지 값을 그대로 사용한다. */
+            colW=(referenceLayout.colW||[]).slice(); rowH=(referenceLayout.rowH||[]).slice();
+            sol={W:fixedTemplate.W,H:fixedTemplate.H,gx:referenceLayout.gx,gy:referenceLayout.gy,
+              center:!!referenceLayout.center,cropped:false,sx:referenceLayout.sx,sy:referenceLayout.sy};
+          }
       /* 같은 그룹은 모든 페이지에서 하나의 캔버스와 PPTX 배율을 공유한다.
          외곽 우선은 외곽을 고정하고 남는 폭/높이를 간격에 배분하며,
          간격 우선은 간격을 고정하고 남는 공간을 대칭 외곽에 배분한다. */
@@ -13334,18 +13535,21 @@ body.__sheet_processing #make.sheetBtn:focus{
           for(var refRow=0;refRow<layoutRows;refRow++){
             referenceRowStarts.push(refY); refY+=rowH[refRow]+fs*2+sol.gy;
           }
-          sharedPixelBasis.referenceLayout={
-            colW:colW.slice(),rowH:rowH.slice(),colStarts:referenceColStarts,rowStarts:referenceRowStarts,
-            gx:sol.gx,gy:sol.gy,sx:sol.sx,sy:sol.sy,center:!!sol.center
-          };
-        }
-      }
+              sharedPixelBasis.referenceLayout={
+                colW:colW.slice(),rowH:rowH.slice(),colStarts:referenceColStarts,rowStarts:referenceRowStarts,
+                gx:sol.gx,gy:sol.gy,sx:sol.sx,sy:sol.sy,center:!!sol.center
+              };
+              /* 첫 페이지도 후속 페이지와 같은 행/열 단위 공식으로 배치한다. */
+              isolatedPositions=fitGroupsToFixedSheet(sharedPixelBasis.referenceLayout,template);
+            }
+	      }
       W=sol.W; H=sol.H; gx=sol.gx; gy=sol.gy; cropped=!!sol.cropped; center=!!sol.center;
       pixelLayout={boxes:itemBoxes,colW:colW,rowH:rowH,sx:sol.sx,sy:sol.sy,positions:isolatedPositions};
     }else{
       if(opt.fit==='pixel' && list.length){
         await ensureDim(list[0]);
-        var cw0=Math.max(1,Number(list[0].width)||540), ch0=Math.max(1,Number(list[0].height)||Math.round(cw0/rawRatio(list[0])));
+        var fallbackRef=layoutReferenceDimensions(list[0]);
+        var cw0=fallbackRef.w, ch0=fallbackRef.h;
         var sol0=solveCanvas(layoutCols,layoutRows,cw0,ch0,gap,margin,targetRatio), sc0=canvasGuardScale(sol0.W,sol0.H);
         if(sc0<1){
           var sourceCw0=cw0, sourceCh0=ch0, fallbackScale=sc0;
@@ -13358,6 +13562,42 @@ body.__sheet_processing #make.sheetBtn:focus{
           }
         }
         W=sol0.W; H=sol0.H; gx=sol0.gx; gy=sol0.gy; cropped=!!sol0.cropped; center=!!sol0.center;
+      }
+    }
+
+    /* 모든 배치 좌표를 캔버스 생성 전에 검증한다. 규격과 페이지 목록이
+       일치해도 이전 공통 트랙의 끝 행/열이 캔버스 밖으로 나가면 브라우저는
+       조용히 잘라 버린다. 크롭을 명시한 경우를 제외하고는 전체 컷 경계를
+       포함하도록 같은 시트 비율로 캔버스만 확장한다. 컷 수별 예외는 없다. */
+    if(pixelLayout && !cropResidual && list.length){
+      var requiredRight=0, requiredBottom=0;
+      function preflightColStart(col){
+        var x=Number.isFinite(pixelLayout.sx)?pixelLayout.sx:margin;
+        for(var pc=0;pc<col;pc++) x+=(pixelLayout.colW[pc]+fs*2)+gx;
+        return x;
+      }
+      function preflightRowStart(row){
+        var y=Number.isFinite(pixelLayout.sy)?pixelLayout.sy:margin;
+        for(var pr=0;pr<row;pr++) y+=(pixelLayout.rowH[pr]+fs*2)+gy;
+        return y;
+      }
+      for(var pf=0;pf<list.length;pf++){
+        var pfAt=posForIndex(pf);
+        if(pfAt.col>=layoutCols||pfAt.row>=layoutRows) continue;
+        var pfFixed=pixelLayout.positions&&pixelLayout.positions[pf];
+        var pfX=pfFixed?pfFixed.x:preflightColStart(pfAt.col);
+        var pfY=pfFixed?pfFixed.y:preflightRowStart(pfAt.row);
+        var pfBox=pixelLayout.boxes[pf];
+        requiredRight=Math.max(requiredRight,pfX+pfBox.w+fs*2);
+        requiredBottom=Math.max(requiredBottom,pfY+pfBox.h+fs*2);
+      }
+      var safeOuter=Math.max(0,Number(margin)||0);
+      var needW=Math.ceil(requiredRight+safeOuter), needH=Math.ceil(requiredBottom+safeOuter);
+      if(needW>W || needH>H){
+        W=Math.max(W,needW); H=Math.max(H,needH);
+        if(W/H>targetRatio) H=W/targetRatio;
+        else if(W/H<targetRatio) W=H*targetRatio;
+        W=Math.ceil(W); H=Math.ceil(H);
       }
     }
 
@@ -13609,6 +13849,7 @@ body.__sheet_processing #make.sheetBtn:focus{
     previewStack.className='dpc-sheet-preview-stack';
     previewStack.appendChild(cv);
     div.appendChild(previewStack); var pagesTarget=dpcRenderTarget || E('pages'); if(pagesTarget) pagesTarget.appendChild(div);
+    return pptPlacements.length;
   }
   function makeBlankForCurrentLayout(){
     var arr=A(); if(arr.length) return false;
@@ -13705,9 +13946,9 @@ body.__sheet_processing #make.sheetBtn:focus{
       /* 비동기 준비나 생성용 빈 프레임 추가보다 먼저 현재 표시값을 확정한다. */
       var generationSelection={
         opt:readOpt(),
-        /* 데이터가 없는 초기 생성은 내부에서 빈 프레임을 추가하더라도
-           클릭 순간 화면의 시트/규격을 다시 추천하지 않고 그대로 사용한다. */
-        forceVisible:A().length===0,
+        /* 추천은 업로드·옵션 변경 단계에서 끝낸다. 생성은 데이터 유무나
+           편집 이력과 관계없이 클릭 순간의 표시값만 소비한다. */
+        forceVisible:true,
         ratioEdited:!!window.__sheetUserEditedRatio,
         layoutEdited:!!window.__sheetUserEditedLayout,
         flowEdited:!!window.__sheetUserEditedFlow,
@@ -13738,6 +13979,8 @@ body.__sheet_processing #make.sheetBtn:focus{
       if(!data.length){ if(pages) pages.classList.remove('dpc-generating-sheet'); return false; }
       for(var i=0;i<data.length;i++) await ensureDim(data[i]);
       var gs=grouped(data,generationSelection), pageNo=1,total=0,globalCutNo=1;
+      var groupedCount=gs.reduce(function(sum,group){ return sum+((group&&group.list&&group.list.length)||0); },0);
+      if(groupedCount!==data.length) throw new Error('sheet grouping count mismatch: '+groupedCount+' / '+data.length);
       /* 픽셀 크기의 유일한 기준은 입력 전체의 첫 컷이다. 비율 그룹이 바뀌어도
          가로 배치는 이 높이, 세로 배치는 이 폭을 계속 사용한다. */
       var globalReferenceItem=data[0]||null;
@@ -13769,7 +14012,8 @@ body.__sheet_processing #make.sheetBtn:focus{
         for(var pg=0;pg<job.pageLists.length;pg++){
           var pageList=job.pageLists[pg];
           total++;
-          await drawPage(pageList,job.opt,pageNo++,globalCutNo,globalReferenceItem,job.sharedBasis);
+          var drawnCount=await drawPage(pageList,job.opt,pageNo++,globalCutNo,globalReferenceItem,job.sharedBasis);
+          if(drawnCount!==pageList.length) throw new Error('sheet placement count mismatch: '+drawnCount+' / '+pageList.length);
           globalCutNo+=pageList.length;
         }
       }
@@ -14728,15 +14972,11 @@ body.__sheet_processing #make.sheetBtn:focus{
   function int(v,d){ v=parseInt(String(v||''),10); return (isFinite(v)&&v>0)?v:d; }
   function baseSize(rw,rh){
     rw=num(rw,16); rh=num(rh,9);
-    if(rw<rh) return {w:1080,h:Math.round(1080*(rh/rw)),ar:Math.max(rw/rh,rh/rw)};
-    return {w:Math.round(1080*(rw/rh)),h:1080,ar:Math.max(rw/rh,rh/rw)};
+    var e=window.dpcFrameResolutionEnvelope(rw,rh);
+    return {w:e.baseW,h:e.baseH,ar:e.aspect};
   }
   function maxPercentForRatio(rw,rh){
-    var ar=baseSize(rw,rh).ar;
-    var p=100;
-    if(ar>4) p=50;
-    if(ar>10) p=50-Math.ceil(ar-10);
-    return Math.max(1,Math.min(100,p));
+    return window.dpcFrameResolutionEnvelope(rw,rh).maxPercent;
   }
   function ensureOption(p){
     var sel=E('blankResPreset'); if(!sel) return;
@@ -15570,11 +15810,17 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
     return window.__dpcPptxGenPromise;
   }
   var PPT_FONT_FACE='Malgun Gothic';
+  var PPTX_MIME='application/vnd.openxmlformats-officedocument.presentationml.presentation';
   function pageRecords(){
     var pages=E('pages'); if(!pages) return [];
     return Array.prototype.map.call(pages.querySelectorAll('.page'),function(page){return page.__dpcPptPage;}).filter(Boolean);
   }
   async function downloadBlob(blob,name){
+    /* Android 다운로드 관리자는 확장자보다 Blob MIME을 우선한다.
+       PptxGenJS가 application/zip으로 반환해도 PPTX MIME으로 정규화한다. */
+    if(/\.pptx$/i.test(String(name||'')) && String(blob&&blob.type||'').toLowerCase()!==PPTX_MIME){
+      blob=new Blob([blob],{type:PPTX_MIME});
+    }
     if(typeof window.dpcSaveBlob==='function') return window.dpcSaveBlob(blob,name);
     var url=URL.createObjectURL(blob), a=document.createElement('a');
     a.href=url; a.download=name; a.style.display='none'; document.body.appendChild(a); a.click(); a.remove();
@@ -15628,8 +15874,7 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
           var placement=rec.placements[ii], item=placement.item||{};
           var itemName=String(item.file&&item.file.name||('CUT_'+String(ii+1).padStart(3,'0')));
           var ir=rectInches(placement.image,sx,sy,scale);
-          await ensureDim(item);
-          /* 원본 픽셀과 바이트는 재표본화하지 않고 그대로 넣는다. */
+              /* 원본 픽셀과 바이트는 재표본화하지 않고 그대로 넣는다. */
           var data=await itemImageData(item);
           var imageObjectName='CUT '+String(ii+1).padStart(3,'0');
           if(placement.frame){
@@ -15685,8 +15930,10 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
           }
         }
       }
-      var out=await pptx.write({outputType:'blob',compression:false});
-      if(!(out instanceof Blob)) out=new Blob([out],{type:'application/vnd.openxmlformats-officedocument.presentationml.presentation'});
+      var rawOut=await pptx.write({outputType:'blob',compression:false});
+      /* PPTX는 ZIP 패키지이지만 다운로드 MIME은 반드시 PPTX 전용이어야 한다.
+         Blob 여부와 무관하게 다시 감싸 Android/웹뷰의 ZIP 오인식을 막는다. */
+      var out=new Blob([rawOut],{type:PPTX_MIME});
       await downloadBlob(out,fileStem()+'.pptx');
       try{if(typeof window.gtag==='function') window.gtag('event','sheet_save_pptx',{tool_name:'frame_sheet',page_count:records.length});}catch(_e){}
     }catch(err){
@@ -15820,6 +16067,587 @@ function bind(){
   });
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind);else bind();
+})();
+</script>
+
+<style id="dpc-sheet-purpose-mode-v75">
+/* V75: 새 행을 만들지 않고 배치 행의 남는 폭에 용도 프리셋을 배치한다. */
+.sheet-purpose-switch{
+  justify-self:end;
+  display:inline-flex;
+  align-items:center;
+  justify-content:stretch;
+  width:96px;
+  height:32px;
+  padding:0;
+  box-sizing:border-box;
+  border:1px solid #d2d2d2;
+  border-radius:7px;
+  background:#fff;
+  overflow:hidden;
+}
+.sheet-purpose-btn{
+  flex:1 1 0;
+  width:50%;
+  min-width:0;
+  height:30px!important;
+  min-height:30px!important;
+  padding:0 4px!important;
+  border:0!important;
+  border-radius:0!important;
+  background:#fff!important;
+  color:#777!important;
+  box-shadow:none!important;
+  font-family:'Noto Sans KR',sans-serif!important;
+  font-size:13px!important;
+  font-weight:600!important;
+  line-height:30px!important;
+  white-space:nowrap;
+  outline:none!important;
+  -webkit-appearance:none;
+  appearance:none;
+  -webkit-tap-highlight-color:transparent!important;
+  user-select:none;
+  -webkit-user-select:none;
+}
+.sheet-purpose-btn:hover,
+.sheet-purpose-btn:active,
+.sheet-purpose-btn:focus,
+.sheet-purpose-btn:focus-visible{
+  background:#fff!important;
+  border:0!important;
+  outline:none!important;
+  box-shadow:none!important;
+}
+.sheet-purpose-btn.is-active,
+.sheet-purpose-btn.is-active:hover,
+.sheet-purpose-btn.is-active:active,
+.sheet-purpose-btn.is-active:focus,
+.sheet-purpose-btn.is-active:focus-visible{
+  background:#1684f2!important;
+  border:0!important;
+  color:#fff!important;
+  font-weight:750!important;
+  outline:none!important;
+  box-shadow:none!important;
+}
+.sheet-purpose-divider{
+  display:block;
+  flex:0 0 1px;
+  align-self:stretch;
+  width:1px;
+  height:auto;
+  color:transparent;
+  background:#d2d2d2;
+}
+@media(min-width:431px){
+  /* 웹: 버튼 우측 끝을 시트/규격 행의 '고정' 텍스트 끝점에 맞춘다. */
+  body .controls-card .fs-flow-row{
+    grid-template-columns:42px 76px 48px 10px 48px 72px 1fr!important;
+    column-gap:6px!important;
+  }
+  .sheet-purpose-switch{
+    grid-column:4 / 7;
+    justify-self:end!important;
+    margin-left:0;
+    margin-right:0;
+  }
+}
+@media(max-width:430px){
+  body .controls-card .fs-flow-row{
+    grid-template-columns:38px 68px 42px 8px 42px 62px 1fr!important;
+    column-gap:5px!important;
+  }
+  body .controls-card .radio-label{
+    margin-right:0!important;
+  }
+  .sheet-purpose-switch{
+    grid-column:4 / 7;
+    justify-self:end!important;
+    width:96px;
+    height:32px;
+    margin-left:0;
+    margin-right:0;
+  }
+  .sheet-purpose-btn{
+    height:30px!important;
+    min-height:30px!important;
+    padding:0 3px!important;
+    color:#747474!important;
+    font-size:13px!important;
+    line-height:30px!important;
+  }
+  .sheet-purpose-btn.is-active{
+    color:#fff!important;
+    font-weight:750!important;
+  }
+}
+@media(max-width:370px){
+  body .controls-card .fs-flow-row{
+    grid-template-columns:38px 68px 42px 8px 42px 62px 1fr!important;
+    column-gap:5px!important;
+  }
+  body .controls-card .fs-flow-row .fs-title,
+  body .controls-card .fs-flow-row .radio-label{font-size:14px!important;}
+  .sheet-purpose-switch{width:92px;margin-left:0;}
+  .sheet-purpose-btn{padding:0 2px!important;font-size:12.5px!important;}
+}
+</style>
+
+<script id="dpc-sheet-purpose-mode-v75-script">
+/* V79 목적별 작업 모드
+   - 이미지형: 기존 자동 추천 흐름
+   - 문서형: 16:9 시트 고정, 가로 5x2 / 세로 2x5, 텍스트 여백, 컷 넘버 바깥쪽
+   - 문서형 자동 규격은 텍스트 여백/방향의 4가지 조합만 사용한다.
+   - 문서형 자동 시트는 16:9/A4 가로/A4 세로만 허용하고 수동값은 보존한다.
+   - 규격 고정은 실제 숫자 고정만 담당한다.
+   선택한 모드는 파일 교체/추가 과정에서 초기화하지 않는다. */
+(function(){
+  var mode='image';
+  var documentFlow='horizontal';
+  var documentTextMargin=true;
+  var documentRatioLocked=true;
+  var documentLayoutLocked=false;
+  var documentRatioManual=false;
+  var documentLayoutManual=false;
+  var manualDocumentRatio=null;
+  var manualDocumentLayout=null;
+  var lockedDocumentLayout=null;
+  var imageState=null;
+  var applying=false;
+  function E(id){ return document.getElementById(id); }
+  function setValue(id,value){ var el=E(id); if(el) el.value=String(value); }
+  function setChecked(id,value){ var el=E(id); if(el) el.checked=!!value; }
+  function syncButtons(){
+    var image=E('purposeImage'), documentMode=E('purposeDocument');
+    if(image){ image.classList.toggle('is-active',mode==='image'); image.setAttribute('aria-pressed',mode==='image'?'true':'false'); }
+    if(documentMode){ documentMode.classList.toggle('is-active',mode==='document'); documentMode.setAttribute('aria-pressed',mode==='document'?'true':'false'); }
+  }
+  function syncCommonUi(){
+    if(typeof syncFrameSheetOptionLabels==='function') syncFrameSheetOptionLabels();
+    if(typeof window.dpcSyncCutNumberControls==='function') window.dpcSyncCutNumberControls();
+    if(typeof window.dpcSyncMarginRuleControls==='function') window.dpcSyncMarginRuleControls();
+  }
+  function freshImageState(){
+    return {rw:'4',rh:'3',c:'4',r:'5',flow:'vertical',ratioLocked:false,layoutLocked:false};
+  }
+  /* '초기화'의 권위는 새 접속 상태다. 파일 교체/추가는 현재 목적을 유지하지만,
+     명시적 초기화는 모드 표시와 옵션을 함께 이미지 기본 상태로 되돌린다. */
+  function resetPurposeToFreshImage(applyUi){
+    mode='image';
+    documentFlow='horizontal';
+    documentTextMargin=true;
+    documentRatioLocked=true;
+    documentLayoutLocked=false;
+    documentRatioManual=false;
+    documentLayoutManual=false;
+    manualDocumentRatio=null;
+    manualDocumentLayout=null;
+    lockedDocumentLayout=null;
+    imageState=freshImageState();
+    syncButtons();
+    if(applyUi) applyImagePreset(false);
+  }
+  function readImageState(){
+    return {
+      rw:(E('ratioW')&&E('ratioW').value)||'4',
+      rh:(E('ratioH')&&E('ratioH').value)||'3',
+      c:(E('colsInput')&&E('colsInput').value)||'4',
+      r:(E('rowsInput')&&E('rowsInput').value)||'5',
+      flow:(E('flow')&&E('flow').value)==='horizontal'?'horizontal':'vertical',
+      ratioLocked:!!(E('lockRatio')&&E('lockRatio').checked),
+      layoutLocked:!!(E('lockLayout')&&E('lockLayout').checked)
+    };
+  }
+  function hasSourceItems(){
+    try{ return typeof items!=='undefined' && Array.isArray(items) && items.length>0; }
+    catch(_e){ return false; }
+  }
+  function cloneTextMarginBase(base){
+    if(!base) return null;
+    return {
+      c:base.c,r:base.r,flow:base.flow,
+      manual:!!base.manual,dirty:!!base.dirty,purpose:base.purpose
+    };
+  }
+  function readPositive(id,fallback){
+    var value=parseFloat((E(id)||{}).value);
+    return isFinite(value)&&value>0?value:fallback;
+  }
+  function snapDocumentAutoRatio(){
+    if(mode!=='document' || documentRatioLocked || documentRatioManual) return;
+    var current=readPositive('ratioW',16)/readPositive('ratioH',9);
+    var candidates=[
+      {w:16,h:9},
+      {w:10,h:7},
+      {w:7,h:10}
+    ];
+    var best=candidates[0],bestScore=Infinity;
+    candidates.forEach(function(candidate){
+      var ar=candidate.w/candidate.h;
+      var score=Math.abs(Math.log(ar/current));
+      /* 1:1 부근의 동률만 현재 배치 방향으로 결정한다. */
+      if(documentFlow==='horizontal' && ar<1) score+=0.02;
+      if(documentFlow==='vertical' && ar>1) score+=0.02;
+      if(score<bestScore){ best=candidate; bestScore=score; }
+    });
+    setValue('ratioW',best.w);
+    setValue('ratioH',best.h);
+    window.__sheetUserEditedRatio=false;
+  }
+  function captureLockedDocumentLayout(){
+    lockedDocumentLayout={
+      c:(E('colsInput')&&E('colsInput').value)||'5',
+      r:(E('rowsInput')&&E('rowsInput').value)||'2',
+      base:cloneTextMarginBase(window.__dpcTextMarginBaseLayout)
+    };
+  }
+  function currentDocumentTextMargin(){
+    /* 체크박스는 고급 옵션 재구성 과정에서 동적으로 생성된다.
+       생성 규격은 과거 캐시보다 현재 화면의 실제 체크값을 권위로 삼는다. */
+    var control=E('textMarginOn');
+    if(control) documentTextMargin=!!control.checked;
+    return !!documentTextMargin;
+  }
+  function applyDocumentLayoutForFlow(selectedFlow){
+    var vertical=selectedFlow==='vertical';
+    var textOn=currentDocumentTextMargin();
+    /* 문서 자동 규격의 단일 매트릭스:
+       가로 5x2/5x4, 세로 2x5/4x5. */
+    setValue('colsInput',vertical?(textOn?2:4):5);
+    setValue('rowsInput',vertical?5:(textOn?2:4));
+    if(textOn){
+      window.__dpcTextMarginBaseLayout={
+        c:vertical?4:5,
+        r:vertical?5:4,
+        flow:vertical?'vertical':'horizontal',
+        manual:false,
+        dirty:false,
+        purpose:'document'
+      };
+    }else{
+      window.__dpcTextMarginBaseLayout=null;
+    }
+    window.__sheetUserEditedLayout=false;
+    if(typeof syncFrameSheetOptionLabels==='function') syncFrameSheetOptionLabels();
+    if(typeof window.syncSheetPageInfo==='function') window.syncSheetPageInfo();
+  }
+  function applyDocumentPreset(){
+    if(applying) return;
+    applying=true;
+    setChecked('textMarginOn',documentTextMargin);
+    if(documentRatioManual && manualDocumentRatio){
+      setValue('ratioW',manualDocumentRatio.w);
+      setValue('ratioH',manualDocumentRatio.h);
+    }else{
+      setValue('ratioW',16);
+      setValue('ratioH',9);
+    }
+    setChecked('lockRatio',documentRatioLocked);
+    var selectedFlow=documentFlow==='vertical'?'vertical':'horizontal';
+    /* 문서 모드 자체가 10컷 자동 규격을 제공한다. 규격 고정이 켜진 경우에만
+       저장된 열/행을 그대로 복원하며 방향 전환으로도 숫자를 바꾸지 않는다. */
+    if(documentLayoutLocked && lockedDocumentLayout){
+      setValue('colsInput',lockedDocumentLayout.c);
+      setValue('rowsInput',lockedDocumentLayout.r);
+      setChecked('lockLayout',true);
+      window.__dpcTextMarginBaseLayout=cloneTextMarginBase(lockedDocumentLayout.base);
+    }else if(documentLayoutManual && manualDocumentLayout){
+      setValue('colsInput',manualDocumentLayout.c);
+      setValue('rowsInput',manualDocumentLayout.r);
+      setChecked('lockLayout',false);
+      window.__dpcTextMarginBaseLayout=cloneTextMarginBase(manualDocumentLayout.base);
+    }else{
+      documentLayoutLocked=false;
+      lockedDocumentLayout=null;
+      setChecked('lockLayout',false);
+      applyDocumentLayoutForFlow(selectedFlow);
+    }
+    setValue('flow',selectedFlow);
+    setChecked('flowVertical',selectedFlow==='vertical');
+    setChecked('flowHorizontal',selectedFlow==='horizontal');
+    setChecked('cutNumberOn',true);
+    setChecked('cutNumberInside',false);
+    setChecked('cutNumberOutside',true);
+    window.__sheetUserEditedRatio=false;
+    window.__sheetUserEditedLayout=false;
+    window.__sheetUserEditedFlow=true;
+    snapDocumentAutoRatio();
+    syncCommonUi();
+    applying=false;
+  }
+  function applyImagePreset(runRecommendation){
+    if(applying) return;
+    applying=true;
+    var saved=imageState||freshImageState();
+    setValue('ratioW',saved.rw);
+    setValue('ratioH',saved.rh);
+    setValue('colsInput',saved.c);
+    setValue('rowsInput',saved.r);
+    setChecked('lockRatio',saved.ratioLocked);
+    setChecked('lockLayout',saved.layoutLocked);
+    setChecked('textMarginOn',false);
+    setChecked('cutNumberOn',false);
+    setChecked('cutNumberOutside',false);
+    setChecked('cutNumberInside',true);
+    var imageFlow=saved.flow==='horizontal'?'horizontal':'vertical';
+    setValue('flow',imageFlow);
+    setChecked('flowVertical',imageFlow==='vertical');
+    setChecked('flowHorizontal',imageFlow==='horizontal');
+    window.__sheetUserEditedRatio=false;
+    window.__sheetUserEditedLayout=false;
+    window.__sheetUserEditedFlow=false;
+    window.__dpcTextMarginBaseLayout=null;
+    syncCommonUi();
+    applying=false;
+    /* 컷이 없으면 최초 이미지 상태를 그대로 복원한다. 컷이 있으면 현재 수량으로 다시 추천한다. */
+    if(runRecommendation && hasSourceItems() && typeof window.recommend==='function') window.recommend();
+    imageState=readImageState();
+  }
+  function reapplyMode(){
+    if(mode==='document') applyDocumentPreset();
+    syncButtons();
+  }
+  function bind(){
+    var image=E('purposeImage'), documentMode=E('purposeDocument');
+    imageState=readImageState();
+    /* document 캡처 단계에서 모드를 먼저 바꾼다. 기존 초기화 핸들러가
+       applyFrameSheetInitialState()를 호출해도 문서 프리셋이 다시 덮지 못한다. */
+    if(!document.__dpcPurposeFreshResetV79){
+      document.addEventListener('click',function(event){
+        var target=event.target&&event.target.closest?event.target.closest('#clear,#cutResetBtn'):null;
+        if(!target) return;
+        resetPurposeToFreshImage(false);
+        setTimeout(function(){ resetPurposeToFreshImage(true); },0);
+        setTimeout(function(){ resetPurposeToFreshImage(true); },100);
+      },true);
+      document.__dpcPurposeFreshResetV79=true;
+    }
+    if(image) image.addEventListener('click',function(){
+      if(mode==='image') imageState=readImageState();
+      mode='image'; syncButtons(); applyImagePreset(true);
+    });
+    if(documentMode) documentMode.addEventListener('click',function(){
+      if(mode==='image') imageState=readImageState();
+      mode='document';
+      documentFlow='horizontal';
+      documentTextMargin=true;
+      documentRatioLocked=true;
+      documentLayoutLocked=false;
+      documentRatioManual=false;
+      documentLayoutManual=false;
+      manualDocumentRatio=null;
+      manualDocumentLayout=null;
+      lockedDocumentLayout=null;
+      syncButtons(); applyDocumentPreset();
+    });
+
+    /* 규격 고정 OFF에서는 문서 자동 규칙(5x2/2x5)이 방향에 맞춰 움직인다.
+       ON에서는 배치 순서만 바뀌고 현재 열/행 숫자는 그대로 유지된다. */
+    [['flowVertical','vertical'],['flowHorizontal','horizontal']].forEach(function(pair){
+      var flowRadio=E(pair[0]);
+      if(flowRadio) flowRadio.addEventListener('change',function(){
+        if(mode==='document' && flowRadio.checked){
+          documentFlow=pair[1];
+          if(!documentLayoutLocked && !documentLayoutManual && !(E('lockLayout')&&E('lockLayout').checked)){
+            applyDocumentLayoutForFlow(documentFlow);
+          }
+          snapDocumentAutoRatio();
+        }
+      });
+    });
+
+    /* textMarginOn은 이 bind()보다 늦게 생성될 수 있으므로 특정 노드에
+       직접 연결하지 않고 위임한다. 재구성 후에도 같은 상태 경로를 쓴다. */
+    document.addEventListener('change',function(event){
+      var textMarginControl=event&&event.target;
+      if(!textMarginControl || textMarginControl.id!=='textMarginOn') return;
+      if(mode!=='document' || applying) return;
+      documentTextMargin=!!textMarginControl.checked;
+      setTimeout(function(){
+        if(mode!=='document') return;
+        if(!documentLayoutLocked && !documentLayoutManual && !(E('lockLayout')&&E('lockLayout').checked)){
+          applyDocumentLayoutForFlow(documentFlow);
+        }
+        snapDocumentAutoRatio();
+        syncCommonUi();
+      },0);
+    });
+
+    var ratioLock=E('lockRatio');
+    if(ratioLock) ratioLock.addEventListener('change',function(){
+      if(mode!=='document' || applying) return;
+      documentRatioLocked=!!ratioLock.checked;
+      if(!documentRatioLocked){
+        documentRatioManual=false;
+        manualDocumentRatio=null;
+      }
+      setTimeout(function(){ snapDocumentAutoRatio(); syncCommonUi(); },0);
+    });
+
+    var layoutLock=E('lockLayout');
+    if(layoutLock) layoutLock.addEventListener('change',function(){
+      if(mode!=='document') return;
+      documentLayoutLocked=!!layoutLock.checked;
+      if(documentLayoutLocked){
+        captureLockedDocumentLayout();
+      }else{
+        lockedDocumentLayout=null;
+        documentLayoutManual=false;
+        manualDocumentLayout=null;
+        applyDocumentLayoutForFlow(documentFlow);
+      }
+    });
+
+    ['colsInput','rowsInput'].forEach(function(id){
+      var input=E(id);
+      if(input){
+        var captureDocumentLayoutInput=function(){
+          if(mode!=='document' || applying) return;
+          if(documentLayoutLocked){
+            captureLockedDocumentLayout();
+          }else{
+            documentLayoutManual=true;
+            manualDocumentLayout={
+              c:(E('colsInput')&&E('colsInput').value)||'5',
+              r:(E('rowsInput')&&E('rowsInput').value)||'2',
+              base:cloneTextMarginBase(window.__dpcTextMarginBaseLayout)
+            };
+          }
+        };
+        input.addEventListener('input',captureDocumentLayoutInput);
+        input.addEventListener('change',captureDocumentLayoutInput);
+      }
+    });
+
+    ['ratioW','ratioH'].forEach(function(id){
+      var input=E(id);
+      if(input){
+        var captureDocumentRatioInput=function(){
+          if(mode!=='document' || applying) return;
+          documentRatioManual=true;
+          manualDocumentRatio={
+            w:(E('ratioW')&&E('ratioW').value)||'16',
+            h:(E('ratioH')&&E('ratioH').value)||'9'
+          };
+        };
+        input.addEventListener('input',captureDocumentRatioInput);
+        input.addEventListener('change',captureDocumentRatioInput);
+      }
+    });
+
+    document.querySelectorAll('#ratioPanel .r').forEach(function(button){
+      button.addEventListener('click',function(){
+        if(mode!=='document') return;
+        setTimeout(function(){
+          if(mode!=='document') return;
+          documentRatioManual=true;
+          manualDocumentRatio={w:(E('ratioW')||{}).value||'16',h:(E('ratioH')||{}).value||'9'};
+        },0);
+      });
+    });
+    document.querySelectorAll('#layoutPanel .lay').forEach(function(button){
+      button.addEventListener('click',function(){
+        if(mode!=='document') return;
+        setTimeout(function(){
+          if(mode!=='document') return;
+          documentLayoutManual=true;
+          manualDocumentLayout={
+            c:(E('colsInput')||{}).value||'5',r:(E('rowsInput')||{}).value||'2',
+            base:cloneTextMarginBase(window.__dpcTextMarginBaseLayout)
+          };
+        },0);
+      });
+    });
+
+    /* 일반 recommend()의 컷 수 표가 문서 모드의 10컷 템플릿을 덮지 않게 한다.
+       잠금 OFF일 때는 방향별 문서 규격을 먼저 적용하고, 원래 추천기는
+       그 규격을 보존한 채 간격·외곽 같은 공통값만 계산한다. */
+    if(typeof window.recommend==='function' && !window.recommend.__dpcDocumentTemplateV78){
+      var oldRecommend=window.recommend;
+      var documentRecommend=function(request){
+        if(mode==='document'){
+          if(!documentLayoutLocked && !documentLayoutManual && !(E('lockLayout')&&E('lockLayout').checked)){
+            applyDocumentLayoutForFlow(documentFlow);
+          }
+          var linked={};
+          if(request && typeof request==='object'){
+            Object.keys(request).forEach(function(key){ linked[key]=request[key]; });
+          }
+          linked.__sheetLinkedRecommendation=true;
+          linked.preserveLayout=true;
+          linked.spacingCols=parseInt((E('colsInput')||{}).value,10)||5;
+          linked.spacingRows=parseInt((E('rowsInput')||{}).value,10)||2;
+          /* 문서 템플릿의 외곽·간격은 현재 업로드 수가 아니라 한 페이지의
+             고정 수용량을 기준으로 한다. 같은 5x2에서 2컷(40 단계)과
+             10컷(100 단계)이 서로 다른 여백을 갖는 문제를 막는다. */
+          linked.spacingCountOverride=linked.spacingCols*linked.spacingRows;
+          if(documentRatioLocked || documentRatioManual) linked.preserveRatio=true;
+          var result=oldRecommend.call(this,linked);
+          snapDocumentAutoRatio();
+          syncCommonUi();
+          return result;
+        }
+        return oldRecommend.apply(this,arguments);
+      };
+      documentRecommend.__dpcDocumentTemplateV78=true;
+      window.recommend=documentRecommend;
+    }
+
+    /* 파일 교체 초기화가 실행되어도 현재 모드를 마지막 권위로 다시 적용한다. */
+    if(typeof window.applyFrameSheetInitialState==='function' && !window.applyFrameSheetInitialState.__dpcPurposeV75){
+      var oldInitial=window.applyFrameSheetInitialState;
+      var wrappedInitial=function(){
+        var result=oldInitial.apply(this,arguments);
+        reapplyMode();
+        return result;
+      };
+      wrappedInitial.__dpcPurposeV75=true;
+      window.applyFrameSheetInitialState=wrappedInitial;
+    }
+    if(typeof window.resetFrameSheetRuntimeToInitial==='function' && !window.resetFrameSheetRuntimeToInitial.__dpcPurposeFreshResetV79){
+      var oldRuntimeReset=window.resetFrameSheetRuntimeToInitial;
+      var wrappedRuntimeReset=function(){
+        resetPurposeToFreshImage(false);
+        var result=oldRuntimeReset.apply(this,arguments);
+        resetPurposeToFreshImage(true);
+        return result;
+      };
+      wrappedRuntimeReset.__dpcPurposeFreshResetV79=true;
+      window.resetFrameSheetRuntimeToInitial=wrappedRuntimeReset;
+    }
+    ['pick','cutAddBtn'].forEach(function(id){
+      var el=E(id);
+      if(el) el.addEventListener('click',function(){ setTimeout(reapplyMode,0); },true);
+    });
+    var files=E('files');
+    if(files) files.addEventListener('change',function(){
+      setTimeout(reapplyMode,0);
+      setTimeout(reapplyMode,120);
+      setTimeout(reapplyMode,500);
+    });
+    syncButtons();
+  }
+  window.dpcApplySheetPurposeMode=function(next){
+    if(mode==='image' && next==='document') imageState=readImageState();
+    mode=next==='document'?'document':'image';
+    if(mode==='document'){
+      documentFlow='horizontal';
+      documentTextMargin=true;
+      documentRatioLocked=true;
+      documentLayoutLocked=false;
+      documentRatioManual=false;
+      documentLayoutManual=false;
+      manualDocumentRatio=null;
+      manualDocumentLayout=null;
+      lockedDocumentLayout=null;
+    }
+    syncButtons();
+    if(mode==='document') applyDocumentPreset(); else applyImagePreset(true);
+  };
+  window.dpcGetSheetPurposeMode=function(){ return mode; };
+  window.dpcResetSheetPurposeToInitial=function(){ resetPurposeToFreshImage(true); };
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',bind); else bind();
 })();
 </script>
 </body>
