@@ -4261,9 +4261,11 @@ if(bgColor.value!=="transparent"){
   var mobile=/Android|iPhone|iPad|iPod/i.test(ua);
   var refHost='';
   try{ refHost=new URL(document.referrer||'').hostname.toLowerCase(); }catch(_error){}
-  /* 실제 기기 테스트에서 이미지·ZIP 저장 실패가 확인된 Facebook/Messenger만 사전 제한한다.
-     카카오·Instagram·일반 WebView는 환경별 차이가 있으므로 저장을 먼저 시도한다. */
-  var uaRestricted=/(FBAN|FBAV|FB_IAB|FB4A|FBIOS|FBBV|FBMD|FBSN|FBSS|FBCR|FBID|FBLC|FBOP|Messenger)/i.test(ua);
+  /* 여러 장·ZIP 저장이 불완전한 앱 내부 브라우저는 저장 종류와 관계없이
+     동일하게 Chrome 안내를 표시한다. 외부 브라우저 UA는 제한하지 않는다. */
+  var uaRestricted=/(KAKAOTALK|FBAN|FBAV|FB_IAB|FB4A|FBIOS|FBBV|FBMD|FBSN|FBSS|FBCR|FBID|FBLC|FBOP|Messenger|Instagram)/i.test(ua)
+    ||(/Android/i.test(ua)&&(/;\s*wv\)/i.test(ua)||/\bVersion\/4\.0\b.*\bChrome\//i.test(ua)))
+    ||(/iPhone|iPad|iPod/i.test(ua)&&!/Safari\//i.test(ua)&&!/(CriOS|FxiOS|EdgiOS|OPiOS)/i.test(ua));
   /* Facebook/Instagram에서 외부 Chrome으로 넘어온 경우에도 referrer는 남을 수 있다.
      따라서 이전 사이트만으로 저장을 막지 않고, 실제 앱/WebView UA만 제한한다. */
   var restricted=uaRestricted;
@@ -4415,6 +4417,7 @@ if(bgColor.value!=="transparent"){
   }
   window.dpcSaveBlob=async function(blob,name){
     var saveType=/\.pptx$/i.test(String(name||''))?'pptx':/\.zip$/i.test(String(name||''))?'zip':'image';
+    if(isRestrictedInApp){window.DpcInAppSave.present({saveType:saveType});return false;}
     try{
       directDownload(blob,name);
       if(isRestrictedInApp&&window.DpcInAppSave.notifyAfterAttempt)window.DpcInAppSave.notifyAfterAttempt(saveType);
@@ -4438,6 +4441,7 @@ if(bgColor.value!=="transparent"){
     var button=event.currentTarget;
     var list=canvases();
     if(!list.length){ alert('먼저 시트를 생성하세요'); return; }
+    if(isRestrictedInApp){window.DpcInAppSave.present({saveType:'all_images'});return;}
     var base=prefix();
     withBusy(button,async function(){
       var blobs=await Promise.all(list.map(window.getDpcSheetPngBlob));
@@ -4451,6 +4455,7 @@ if(bgColor.value!=="transparent"){
     var button=event.currentTarget;
     var list=canvases();
     if(!list.length){ alert('먼저 시트를 생성하세요'); return; }
+    if(isRestrictedInApp){window.DpcInAppSave.present({saveType:'zip'});return;}
     withBusy(button,async function(){
       var blobs=await Promise.all(list.map(window.getDpcSheetPngBlob));
       var base=prefix();
@@ -15937,6 +15942,11 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
       alert('PPTX는 모든 슬라이드가 같은 비율이어야 합니다. 현재 생성된 페이지의 시트 비율을 통일한 뒤 다시 생성해 주세요.');
       return;
     }
+    try{if(typeof window.gtag==='function')window.gtag('event','sheet_save_pptx',{tool_name:'sheet',page_count:records.length});}catch(_trackError){}
+    if(window.DpcInAppSave&&window.DpcInAppSave.restricted){
+      window.DpcInAppSave.present({saveType:'pptx'});
+      return;
+    }
     var btn=E('savePptx');
     if(btn&&btn.__dpcWorking) return;
     try{
@@ -16032,7 +16042,6 @@ const SHEET_GA4_MEASUREMENT_ID = "G-VBF511BR7D";
       var out=new Blob([rawOut],{type:PPTX_MIME});
       out=await applyPictureFrameOutlines(out);
       await downloadBlob(out,fileStem()+'.pptx');
-      try{if(typeof window.gtag==='function') window.gtag('event','sheet_save_pptx',{tool_name:'sheet',page_count:records.length});}catch(_e){}
     }catch(err){
       console.error(err);
       try{if(window.DpcInAppSave&&window.DpcInAppSave.trackError)window.DpcInAppSave.trackError('pptx');}catch(_trackError){}
