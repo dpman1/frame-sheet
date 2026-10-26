@@ -17375,7 +17375,7 @@ function latestNumberPattern(){
     if(item.__dpcNumberPattern&&Number(item.__dpcNumberPatternRevision)>revision){pattern=item.__dpcNumberPattern;revision=Number(item.__dpcNumberPatternRevision)}
   });return pattern;
 }
-function renumberItems(){
+function renumberItems(options){
  normalizeAltContinuity();var base=0,suffix=0,pattern=latestNumberPattern();
  items.forEach(function(item){
    // Migrate obsolete per-cut numeric anchors out of the model. Labels are
@@ -17386,7 +17386,7 @@ function renumberItems(){
    item.__dpcNumberToken=pattern.prefix+base+(suffix?(pattern.kind==='numeric'?pattern.sep+suffix:alpha(suffix)):'');
    item.__dpcCutLabel=item.__dpcNumberToken;
    item.__dpcSaveLabel=String(base).padStart(3,'0')+(suffix?alpha(suffix):'');
- });decorateThumbs();if(bulkRefreshView)bulkRefreshView();
+ });decorateThumbs();if(bulkRefreshView&&!(options&&options.skipBulkRefresh))bulkRefreshView();
 }
 window.dpcRenumberItems=renumberItems;
 function editorText(item){return String(item.__dpcCaption||'')}
@@ -17416,7 +17416,7 @@ function commitEditor(item,value){
  if(editorText(item)===next)return;
  item.__dpcCaption=next;queueCaptionPreview(item);
 }
-/* The current order and displayed labels are the only authority for bulk captions. */
+/* Bulk edits either use current labels or validate a connected-cut plan in current cut order. */
 function bulkLabelKey(label){
  var m=String(label).trim().toLowerCase().match(/^#(\d+)(?:([a-z]+)|-([1-9]\d*))?$/);
  if(!m)return null;
@@ -17450,26 +17450,55 @@ function parseBulk(text){
   if(block)blocks.push(block);
   return blocks.map(function(b){return {label:b.label,text:b.lines.join('\n').replace(/^\n+|\n+$/g,'')}});
 }
+function bulkConnectionPlan(blocks,current){
+ var missing=blocks.some(function(block){var key=bulkLabelKey(block.label);return key&&!current.has(key)&&Number(key.split(':')[1])>0});
+ if(!missing)return null;
+ var visible=items.filter(function(item){return !!item.__dpcNumberToken}),groups=new Map(),kind='alpha';
+ current.forEach(function(item,key){var parts=key.split(':');groups.set(Number(parts[0]),Math.max(groups.get(Number(parts[0]))||0,Number(parts[1])))});
+ blocks.forEach(function(block){
+   var parts=bulkLabelKey(block.label).split(':'),base=Number(parts[0]),suffix=Number(parts[1]);
+   if(!Number.isSafeInteger(base)||base<1||base>visible.length||!Number.isSafeInteger(suffix)||suffix>=visible.length)throw new Error(block.label+' 번호에 대응할 컷이 부족합니다.');
+   groups.set(base,Math.max(groups.get(base)||0,suffix));
+   if(suffix&&block.label.indexOf('-')>=0)kind='numeric';
+ });
+ var base=1,suffix=0,labels=new Map(),records=[];
+ items.forEach(function(item,index){
+   if(!item.__dpcNumberToken)return;
+   var key=base+':'+suffix,token='#'+base+(suffix?(kind==='numeric'?'-'+suffix:alpha(suffix)):'');
+   records.push({item:item,index:index,alt:suffix>0,token:token});labels.set(key,item);
+   if(suffix<(groups.get(base)||0))suffix++;else{base++;suffix=0}
+ });
+ blocks.forEach(function(block){if(!labels.has(bulkLabelKey(block.label)))throw new Error(block.label+' 번호에 대응할 컷이 부족합니다.')});
+ return {labels:labels,records:records,kind:kind};
+}
 function applyBulk(source){
   var blocks=parseBulk(source),labels=bulkLabels(),seen=new Set(),updates=new Map();
+  blocks.forEach(function(block){var key=bulkLabelKey(block.label);if(seen.has(key))throw new Error(block.label+' 번호가 중복되었습니다.');seen.add(key)});
+  var plan=bulkConnectionPlan(blocks,labels),planned=new Map();
+  if(plan){labels=plan.labels;plan.records.forEach(function(record){planned.set(record.item,record)})}
   blocks.forEach(function(b){
     var label=bulkLabelKey(b.label),item=labels.get(label);
     if(!item)throw new Error(b.label+' 컷이 현재 시트에 없습니다.');
-    if(seen.has(label))throw new Error(b.label+' 번호가 중복되었습니다.');
-    seen.add(label);
-    if(editorText(item)!==b.text&&typeof window.dpcCaptionFitsItem==='function'&&!window.dpcCaptionFitsItem(item,b.text))throw new Error(b.label+' 지문이 텍스트 영역에 들어가지 않습니다.');
+    var record=planned.get(item),candidate=record?Object.assign({},item,{__dpcNumberToken:record.token}):item;
+    if((record||editorText(item)!==b.text)&&typeof window.dpcCaptionFitsItem==='function'&&!window.dpcCaptionFitsItem(candidate,b.text))throw new Error(b.label+' 지문이 텍스트 영역에 들어가지 않습니다.');
     updates.set(item,b.text);
   });
-  // Validate the entire snapshot first. Omitted labels clear the former caption.
+  // Commit numbering and captions only after validating the entire snapshot.
+  if(plan){
+    items.forEach(function(item){item.__dpcNumberPattern={prefix:'#',kind:plan.kind,sep:'-'};item.__dpcNumberPatternRevision=1});
+    plan.records.forEach(function(record){record.item.__dpcAltCut=record.alt;record.item.__dpcAltPrevUid=record.alt?String(items[record.index-1].__dpcUid||''):''});
+  }
   var changed=new Set();
   labels.forEach(function(item){var next=updates.get(item)||'';if(editorText(item)!==next){commitEditor(item,next);changed.add(item)}});
+  if(plan)renumberItems({skipBulkRefresh:true});
   if(changed.size){
     Array.from(document.querySelectorAll('#thumbs > .thumb')).forEach(function(thumb,i){
       var item=itemForThumb(thumb,i),cap=thumb.querySelector(':scope > .dpc-thumb-caption');
       if(item&&cap&&changed.has(item)){cap.value=editorText(item);cap.__dpcRenderedText=cap.value;resizeCaption(cap)}
     });
-    dirty();
   }
+  if(changed.size||plan)dirty();
+  if(plan&&typeof window.dpcSyncSheetAfterCutChange==='function')window.dpcSyncSheetAfterCutChange().catch(function(error){console.error(error)});
   return changed.size;
 }
 function bindBulkEditor(){
@@ -17480,7 +17509,7 @@ function bindBulkEditor(){
     if(pendingInvalid){
       if(order===renderedOrder)return;
       field.value=rebaseBulkDraft(field.value,renderedCuts,cuts);renderedCuts=cuts;renderedOrder=order;
-      try{applyBulk(field.value);pendingInvalid=false;error.textContent=''}
+      try{applyBulk(field.value);pendingInvalid=false;cuts=bulkCutSnapshot();order=bulkOrder(cuts);error.textContent=''}
       catch(err){error.textContent=err.message||'컷 번호 형식을 확인해 주세요.';return}
     }
     if(document.activeElement===field&&order===renderedOrder)return;
