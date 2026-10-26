@@ -3741,6 +3741,50 @@ function dpcDuplicateSelectedInline(ev,it){
  if(typeof recommend==="function") recommend();
  return false;
 }
+let dpcReplaceImageInput=null,dpcReplaceImageBusy=false;
+async function dpcReplaceSheetImage(uid,file){
+ if(!file||dpcReplaceImageBusy)return false;
+ dpcReplaceImageBusy=true;let media=null,installed=false;
+ try{
+   if(!dpcIsImageFile(file))throw new Error('이미지 파일을 선택해 주세요.');
+   media=await dpcCreateSheetItemFromFile(file);
+   if(!media.width||!media.height)throw new Error('이미지를 읽을 수 없습니다.');
+   const index=dpcFindItemByUid(uid);if(index<0)return false;
+   const previous=items[index],replacement=Object.assign({},media);
+   Object.keys(previous).forEach(function(key){
+     if(key.indexOf('__dpc')===0&&key!=='__dpcCaptionLayoutMeta')replacement[key]=previous[key];
+   });
+   replacement.selected=previous.selected;
+   items.splice(index,1,replacement);installed=true;
+   if(typeof window.renderFrameSheetItemList==='function'){
+     window.renderFrameSheetItemList();
+     if(typeof window.dpcRenumberItems==='function')window.dpcRenumberItems();
+   }else render();
+   if(typeof window.DpcProjectMarkDirty==='function')window.DpcProjectMarkDirty();
+   if(typeof window.dpcSyncSheetAfterCutChange==='function')await window.dpcSyncSheetAfterCutChange();
+   if(previous.src&&/^blob:/.test(previous.src)&&!items.some(function(item){return item.src===previous.src}))URL.revokeObjectURL(previous.src);
+   return true;
+ }catch(error){console.error(error);alert(error.message||'그림을 교체하지 못했습니다.');return false;}
+ finally{
+   if(media&&!installed&&media.src&&/^blob:/.test(media.src))URL.revokeObjectURL(media.src);
+   dpcReplaceImageBusy=false;
+ }
+}
+function dpcReplaceImageInline(ev,it){
+ if(ev){ev.preventDefault();ev.stopPropagation();if(ev.stopImmediatePropagation)ev.stopImmediatePropagation();}
+ if(!isFrameSheetSelectMode()||dpcReplaceImageBusy)return false;
+ if(!dpcReplaceImageInput){
+   const input=document.createElement('input');input.type='file';input.accept='image/*';input.hidden=true;
+   document.body.appendChild(input);dpcReplaceImageInput=input;
+   input.addEventListener('change',async function(){
+     const file=input.files&&input.files[0],uid=input.dataset.cutUid;
+     if(!file||dpcReplaceImageBusy)return;
+     try{await dpcReplaceSheetImage(uid,file)}finally{input.value=''}
+   });
+ }
+ dpcReplaceImageInput.dataset.cutUid=dpcEnsureItemUid(it);dpcReplaceImageInput.value='';dpcReplaceImageInput.click();
+ return false;
+}
 
 function render(){
  thumbs.innerHTML="";
@@ -3766,12 +3810,12 @@ function render(){
 	  <button class="del" type="button" aria-label="컷 삭제" title="컷 삭제">✕</button>
 	  <div>${idx+1}. ${it.file.name}</div>
 	  ${(()=>{const src=it.src||"";return `<div class="dpc-cut-thumb-imgbox"><img class="dpc-cut-thumb-img" src="${src}" alt="cut thumbnail"></div>`;})()}
-	  ${selectMode?'<button class="dpc-inline-duplicate" type="button" aria-label="컷 복제" title="컷 복제"></button>':''}`;
+	  ${selectMode?'<button class="dpc-inline-replace" type="button" aria-label="그림 교체" title="그림 교체"><svg width="18" height="14" viewBox="0 0 18 14" fill="none" aria-hidden="true" focusable="false"><path d="M2 7H16 M6 3L2 7L6 11 M12 3L16 7L12 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="dpc-inline-duplicate" type="button" aria-label="컷 복제" title="컷 복제"></button>':''}`;
   const thumbImg=d.querySelector("img.dpc-cut-thumb-img");
 	  if(thumbImg) thumbImg.draggable=false;
 
   d.onclick=(ev)=>{
-	    if(ev && ev.target && ev.target.closest && ev.target.closest(".del,.dpc-inline-duplicate,.dpc-cut-link,.dpc-cut-link-entry,.dpc-thumb-caption")) return;
+	    if(ev && ev.target && ev.target.closest && ev.target.closest(".del,.dpc-inline-duplicate,.dpc-inline-replace,.dpc-cut-link,.dpc-cut-link-entry,.dpc-thumb-caption")) return;
 	    if(d.__dpcConnectorGestureUntil && Date.now()<d.__dpcConnectorGestureUntil) return;
 	    if(thumbs.__dpcDragEndedUntil && Date.now()<thumbs.__dpcDragEndedUntil) return;
 	    if(!isFrameSheetSelectMode()) return;
@@ -3792,6 +3836,8 @@ function render(){
   };
 	  const inlineDuplicate=d.querySelector(".dpc-inline-duplicate");
 	  if(inlineDuplicate) inlineDuplicate.onclick=(ev)=>dpcDuplicateSelectedInline(ev,it);
+	  const inlineReplace=d.querySelector('.dpc-inline-replace');
+	  if(inlineReplace)inlineReplace.onclick=(ev)=>dpcReplaceImageInline(ev,it);
 	  d.querySelector(".del").onclick=(ev)=>{
     if(ev){
       ev.preventDefault();
@@ -3821,7 +3867,8 @@ window.renderFrameSheetItemList=render;
 
 
 /* DPC SHEET MEMORY GUARD - orthodox path
-   원본 보존 우선: 안전 범위 이내 이미지는 원본 objectURL 그대로 사용한다.
+   가져온 파일은 바이트를 확보해 원본 파일의 이동·삭제에 영향받지 않는다.
+   원본 보존 우선: 안전 범위 이내 이미지는 확보한 원본 objectURL을 사용한다.
    위험 범위 초과 시에만 내부 작업용 Blob으로 축소하고, 파일명/순서/비율은 보존한다. */
 const DPC_SHEET_LIMIT_DESKTOP = { maxSide:6000, maxPixels:24000000 };
 const DPC_SHEET_LIMIT_MOBILE  = { maxSide:5000, maxPixels:16000000 };
@@ -3841,11 +3888,27 @@ function dpcLoadImageFromURL(url){
 function dpcCanvasToBlob(canvas, type, quality){
   return new Promise(resolve=>canvas.toBlob(resolve, type || 'image/jpeg', quality == null ? 0.92 : quality));
 }
+const dpcOwnedFiles=new WeakSet(),dpcFileSnapshots=new WeakMap();
+function dpcCreateMemoryFile(bytes,name,options){
+ const file=new File([bytes],name,options);dpcOwnedFiles.add(file);return file;
+}
+async function dpcSnapshotFile(file){
+ if(dpcOwnedFiles.has(file))return file;
+ var pending=dpcFileSnapshots.get(file);
+ if(!pending){
+   pending=file.arrayBuffer().then(function(bytes){return dpcCreateMemoryFile(bytes,file.name||'image.png',{type:file.type,lastModified:file.lastModified})});
+   dpcFileSnapshots.set(file,pending);
+   pending.catch(function(){if(dpcFileSnapshots.get(file)===pending)dpcFileSnapshots.delete(file)});
+ }
+ return pending;
+}
 async function dpcCreateSheetItemFromFile(file){
+  file=await dpcSnapshotFile(file);
   const originalSrc = URL.createObjectURL(file);
   const im = await dpcLoadImageFromURL(originalSrc);
   const ow = im ? (im.naturalWidth || im.width || 0) : 0;
   const oh = im ? (im.naturalHeight || im.height || 0) : 0;
+  if(!ow||!oh){URL.revokeObjectURL(originalSrc);throw new Error('이미지를 읽을 수 없습니다. '+file.name);}
   const limit = dpcSheetLimit();
   const pixels = ow * oh;
   const over = ow > limit.maxSide || oh > limit.maxSide || pixels > limit.maxPixels;
@@ -3868,7 +3931,7 @@ async function dpcCreateSheetItemFromFile(file){
   if(!blob){
     return {file:file, src:URL.createObjectURL(file), selected:false, width:ow, height:oh, _ratio:ow/oh, _optimized:false};
   }
-  const workFile = new File([blob], file.name, {type:blob.type || file.type, lastModified:file.lastModified});
+  const workFile = dpcCreateMemoryFile(blob, file.name, {type:blob.type || file.type, lastModified:file.lastModified});
   return {file:workFile, originalFile:file, src:URL.createObjectURL(workFile), selected:false, width:nw, height:nh, originalWidth:ow, originalHeight:oh, _ratio:ow/oh, _optimized:true};
 }
 
@@ -8319,11 +8382,6 @@ select:focus,input[type=number]:focus,input[type=text]:focus,textarea:focus{
     try{ return (typeof items !== 'undefined' && Array.isArray(items)) ? items : []; }
     catch(e){ return []; }
   }
-  function clearGeneratedOnly(){
-    var p=E('pages'), info=E('pageInfo');
-    if(p) p.innerHTML='';
-    if(info) info.textContent='';
-  }
   function hideIntro(){
     if(typeof hideFrameSheetIntroThumb === 'function') hideFrameSheetIntroThumb();
     else if(typeof syncFrameSheetIntroThumb === 'function') syncFrameSheetIntroThumb(false);
@@ -8359,7 +8417,6 @@ select:focus,input[type=number]:focus,input[type=text]:focus,textarea:focus{
     var a=list();
     var at=insertionIndex!=null&&Number.isFinite(Number(insertionIndex)) ? Number(insertionIndex) : insertionIndexAfterSelection(a);
     at=Math.max(0,Math.min(a.length,Math.round(at)));
-    clearGeneratedOnly();
     var added=[];
     for(const f of selected){
       var item=typeof dpcCreateSheetItemFromFile==='function'
@@ -8380,6 +8437,7 @@ select:focus,input[type=number]:focus,input[type=text]:focus,textarea:focus{
     syncAll({skipRecommend:true});
     hideIntro();
     if(typeof window.DpcProjectMarkDirty==='function') window.DpcProjectMarkDirty();
+    if(typeof window.dpcSyncSheetAfterCutChange==='function')await window.dpcSyncSheetAfterCutChange();
     return added;
   }
   window.dpcAppendSheetFilesAt=appendFilesAt;
@@ -8456,7 +8514,7 @@ select:focus,input[type=number]:focus,input[type=text]:focus,textarea:focus{
     var box=E('thumbs');
     if(!box || box.__dpcCutGapDropBound) return;
     box.__dpcCutGapDropBound=true;
-    var marked=null,insertAt=null;
+    var marked=null,insertAt=null,replaceUid=null,hint=null;
     function isExternalImageDrag(ev){
       var dt=ev.dataTransfer;
       if(!dt) return false;
@@ -8464,8 +8522,14 @@ select:focus,input[type=number]:focus,input[type=text]:focus,textarea:focus{
       return types.indexOf('Files')>=0;
     }
     function clearMark(){
-      if(marked) marked.classList.remove('dpc-file-drop-before','dpc-file-drop-after');
-      marked=null;insertAt=null;
+      if(marked) marked.classList.remove('dpc-file-drop-before','dpc-file-drop-after','dpc-file-drop-replace','dpc-file-drop-invalid');
+      if(hint)hint.hidden=true;
+      marked=null;insertAt=null;replaceUid=null;
+    }
+    function showHint(text,x,y,invalid){
+      if(!hint){hint=document.createElement('div');hint.className='dpc-file-drop-hint';hint.setAttribute('role','status');document.body.appendChild(hint)}
+      hint.textContent=text;hint.style.left=x+'px';hint.style.top=y+'px';hint.hidden=false;
+      hint.classList.toggle('is-invalid',!!invalid);
     }
     function itemIndex(thumb){
       var uid=thumb&&thumb.dataset&&thumb.dataset.dpcUid;
@@ -8493,14 +8557,26 @@ select:focus,input[type=number]:focus,input[type=text]:focus,textarea:focus{
       var index=itemIndex(thumb);
       if(index<0){ clearMark();return; }
       var r=thumb.getBoundingClientRect();
+      var img=thumb.querySelector('img.dpc-cut-thumb-img'),imageRect=img&&img.getBoundingClientRect();
+      var replace=isFrameSheetSelectMode()&&imageRect&&ev.clientX>=imageRect.left&&ev.clientX<=imageRect.right&&ev.clientY>=imageRect.top&&ev.clientY<=imageRect.bottom;
+      clearMark();marked=thumb;
+      if(replace){
+        replaceUid=String(thumb.dataset.dpcUid);
+        var count=Array.from((ev.dataTransfer&&ev.dataTransfer.items)||[]).filter(function(item){return item.kind==='file'}).length;
+        if(!count)count=((ev.dataTransfer&&ev.dataTransfer.files)||[]).length;
+        thumb.classList.add('dpc-file-drop-replace');thumb.classList.toggle('dpc-file-drop-invalid',count>1);
+        showHint(count>1?'교체할 이미지 한 장만 놓아 주세요':'그림 교체',(imageRect.left+imageRect.right)/2,(imageRect.top+imageRect.bottom)/2,count>1);
+        return;
+      }
       var before;
       var multiColumn=box.clientWidth>r.width*1.55;
       if(multiColumn && ev.clientY>=r.top && ev.clientY<=r.bottom) before=ev.clientX<r.left+r.width/2;
       else before=ev.clientY<r.top+r.height/2;
-      if(marked!==thumb){ clearMark();marked=thumb; }
+      thumb.dataset.dpcDropAxis=multiColumn?'column':'row';
       thumb.classList.toggle('dpc-file-drop-before',before);
       thumb.classList.toggle('dpc-file-drop-after',!before);
       insertAt=index+(before?0:1);
+      showHint('추가',multiColumn?(before?r.left:r.right):(r.left+r.right)/2,multiColumn?r.top+16:(before?r.top:r.bottom),false);
     }
     box.addEventListener('dragover',function(ev){
       if(!isExternalImageDrag(ev)) return;
@@ -8516,9 +8592,14 @@ select:focus,input[type=number]:focus,input[type=text]:focus,textarea:focus{
     box.addEventListener('drop',async function(ev){
       if(!isExternalImageDrag(ev)) return;
       ev.preventDefault();ev.stopPropagation();
-      var at=insertAt;
+      markAt(ev);
+      var at=insertAt,uid=replaceUid;
       var dropped=Array.from((ev.dataTransfer&&ev.dataTransfer.files)||[]);
       clearMark();
+      if(uid){
+        if(dropped.length!==1){alert('교체할 이미지 한 장만 놓아 주세요.');return}
+        await dpcReplaceSheetImage(uid,dropped[0]);return;
+      }
       if(at==null||!Number.isFinite(Number(at))) at=insertionIndexAfterSelection(list());
       await appendFilesAt(dropped,at);
     });
@@ -17162,14 +17243,15 @@ body.dpc-show-captions .dpc-thumb-caption{display:block}
 .dpc-caption-toggle[aria-expanded="true"]::before{content:'▼ '}
 .dpc-caption-toggle.dpc-mode-hidden{display:none!important}
 #thumbs .thumb.dpc-file-drop-before::before,#thumbs .thumb.dpc-file-drop-after::after{content:'';position:absolute;z-index:20;pointer-events:none;background:#1684f2;border-radius:3px;box-shadow:0 0 0 2px rgba(22,132,242,.14)}
-@media(hover:hover) and (pointer:fine){
-  #thumbs .thumb.dpc-file-drop-before::before{left:-6px;top:0;bottom:0;width:3px}
-  #thumbs .thumb.dpc-file-drop-after::after{right:-6px;top:0;bottom:0;width:3px}
-}
-@media(max-width:700px),(hover:none){
-  #thumbs .thumb.dpc-file-drop-before::before{left:0;right:0;top:-5px;height:3px}
-  #thumbs .thumb.dpc-file-drop-after::after{left:0;right:0;bottom:-5px;height:3px}
-}
+#thumbs .thumb.dpc-file-drop-before[data-dpc-drop-axis="column"]::before{left:-6px;top:0;bottom:0;width:3px}
+#thumbs .thumb.dpc-file-drop-after[data-dpc-drop-axis="column"]::after{right:-6px;top:0;bottom:0;width:3px}
+#thumbs .thumb.dpc-file-drop-before[data-dpc-drop-axis="row"]::before{left:0;right:0;top:-5px;height:3px}
+#thumbs .thumb.dpc-file-drop-after[data-dpc-drop-axis="row"]::after{left:0;right:0;bottom:-5px;height:3px}
+#thumbs .thumb.dpc-file-drop-replace img.dpc-cut-thumb-img{outline:2px solid #1684f2!important;outline-offset:2px!important;opacity:.65}
+#thumbs .thumb.dpc-file-drop-invalid img.dpc-cut-thumb-img{outline-color:#b93030!important}
+.dpc-file-drop-hint{position:fixed;z-index:100000;transform:translate(-50%,-50%);padding:4px 8px;border-radius:4px;background:#1684f2;color:#fff;font:600 12px/1.4 'Noto Sans KR',sans-serif;white-space:nowrap;pointer-events:none}
+.dpc-file-drop-hint[hidden]{display:none!important}
+.dpc-file-drop-hint.is-invalid{background:#b93030}
 .dpc-project-actions{height:var(--dp-polish-btn-h,42px);display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);align-items:stretch;border:1px solid #d2d2d2;border-radius:var(--dp-polish-btn-r,8px);overflow:hidden;background:#fff;box-sizing:border-box}
 .sheet-logo-image+.tool-card.top-card .savebar .dpc-project-actions button{width:auto!important;height:100%!important;min-height:0!important;min-width:0!important;padding:0 9px!important;border:0!important;border-left:1px solid #d2d2d2!important;border-radius:0!important;background:#fff!important;color:#111!important;font-size:14px!important;font-weight:600!important;box-shadow:none!important}
 .sheet-logo-image+.tool-card.top-card .savebar .dpc-project-actions button:first-child{border-left:0!important}
@@ -17208,7 +17290,7 @@ body.dpc-show-captions #thumbs .thumb>.dpc-thumb-caption{display:block!important
   body.dpc-show-captions #thumbs .thumb>.dpc-cut-thumb-imgbox{padding:5px!important}
   body.dpc-show-captions #thumbs .thumb>.dpc-thumb-caption{font-size:13px!important;line-height:1.45!important;padding:8px!important}
 }
-#thumbs.dpc-sort-active .thumb{cursor:grab!important;touch-action:pan-y!important;-webkit-touch-callout:none!important;user-select:none!important;-webkit-user-select:none!important}
+#thumbs.dpc-sort-active .thumb{cursor:grab!important;touch-action:pan-y pinch-zoom!important;-webkit-touch-callout:none!important;user-select:none!important;-webkit-user-select:none!important}
 #thumbs.dpc-sort-active .thumb:active{cursor:grabbing!important}
 #thumbs.dpc-sort-active .thumb img.dpc-cut-thumb-img{pointer-events:none!important;-webkit-user-drag:none!important;-webkit-touch-callout:none!important;user-select:none!important;-webkit-user-select:none!important}
 #thumbs .thumb.dpc-sort-chosen{opacity:.96!important;transform:scale(.985)!important;box-shadow:0 4px 14px rgba(0,0,0,.14)!important}
@@ -17220,9 +17302,14 @@ body.dpc-show-captions #thumbs .thumb>.dpc-thumb-caption{display:block!important
 body.dpc-select-mode #thumbs .thumb{cursor:pointer!important;-webkit-touch-callout:none!important;user-select:none!important;-webkit-user-select:none!important}
 body.dpc-select-mode #thumbs .thumb>button.del{display:block!important}
 body.dpc-select-mode.dpc-has-selection #thumbs .thumb:not(.dpc-multi-selected)>button.del,
-body.dpc-select-mode.dpc-has-selection #thumbs .thumb:not(.dpc-multi-selected)>button.dpc-inline-duplicate{display:none!important}
+body.dpc-select-mode.dpc-has-selection #thumbs .thumb:not(.dpc-multi-selected)>button.dpc-inline-duplicate,
+body.dpc-select-mode.dpc-has-selection #thumbs .thumb:not(.dpc-multi-selected)>button.dpc-inline-replace{display:none!important}
 body.dpc-select-mode #thumbs .thumb>.dpc-thumb-caption{pointer-events:none!important;user-select:none!important}
-#thumbs .thumb>button.dpc-inline-duplicate,#thumbs .thumb>button.dpc-inline-duplicate:hover,#thumbs .thumb>button.dpc-inline-duplicate:active,#thumbs .thumb>button.dpc-inline-duplicate:focus,#thumbs .thumb>button.dpc-inline-duplicate:focus-visible{position:absolute!important;z-index:24!important;display:block!important;right:-4px!important;bottom:-4px!important;width:40px!important;min-width:0!important;max-width:40px!important;height:40px!important;min-height:0!important;max-height:40px!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;background-color:transparent!important;background-image:none!important;box-shadow:none!important;outline:0!important;color:transparent!important;font-size:0!important;line-height:0!important;filter:none!important;cursor:pointer!important;touch-action:manipulation!important;-webkit-appearance:none!important;appearance:none!important;-webkit-tap-highlight-color:transparent}
+#thumbs .thumb>button:is(.dpc-inline-duplicate,.dpc-inline-replace),#thumbs .thumb>button:is(.dpc-inline-duplicate,.dpc-inline-replace):hover,#thumbs .thumb>button:is(.dpc-inline-duplicate,.dpc-inline-replace):active,#thumbs .thumb>button:is(.dpc-inline-duplicate,.dpc-inline-replace):focus,#thumbs .thumb>button:is(.dpc-inline-duplicate,.dpc-inline-replace):focus-visible{position:absolute!important;z-index:24!important;display:block!important;bottom:-4px!important;width:40px!important;min-width:0!important;max-width:40px!important;height:40px!important;min-height:0!important;max-height:40px!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;background-color:transparent!important;background-image:none!important;box-shadow:none!important;outline:0!important;color:#c7cbd1!important;font-size:22px!important;line-height:40px!important;filter:none!important;cursor:pointer!important;touch-action:manipulation!important;-webkit-appearance:none!important;appearance:none!important;-webkit-tap-highlight-color:transparent}
+#thumbs .thumb>button.dpc-inline-duplicate{right:-4px!important}
+#thumbs .thumb>button.dpc-inline-replace{left:-4px!important;right:auto!important}
+#thumbs .thumb>button.dpc-inline-replace svg{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none}
+#thumbs .thumb>button.dpc-inline-replace:active,#thumbs .thumb>button.dpc-inline-replace:focus-visible{color:#9299a2!important}
 #thumbs .thumb>button.dpc-inline-duplicate::before,#thumbs .thumb>button.dpc-inline-duplicate::after{content:'';position:absolute;left:50%;top:50%;width:14px;height:2px;border-radius:999px;background:#c7cbd1;transform:translate(-50%,-50%);transition:background-color .12s ease}
 #thumbs .thumb>button.dpc-inline-duplicate::after{transform:translate(-50%,-50%) rotate(90deg)}
 #thumbs .thumb>button.dpc-inline-duplicate:active::before,#thumbs .thumb>button.dpc-inline-duplicate:active::after,#thumbs .thumb>button.dpc-inline-duplicate:focus-visible::before,#thumbs .thumb>button.dpc-inline-duplicate:focus-visible::after{background:#9299a2}
@@ -17330,21 +17417,43 @@ function commitEditor(item,value){
  item.__dpcCaption=next;queueCaptionPreview(item);
 }
 /* The current order and displayed labels are the only authority for bulk captions. */
-function bulkLabels(){var map=new Map();items.forEach(function(item){if(item.__dpcNumberToken)map.set(item.__dpcNumberToken.toLowerCase(),item)});return map}
+function bulkLabelKey(label){
+ var m=String(label).trim().toLowerCase().match(/^#(\d+)(?:([a-z]+)|-([1-9]\d*))?$/);
+ if(!m)return null;
+ var suffix=m[3]?Number(m[3]):m[2]?m[2].split('').reduce(function(n,c){return n*26+c.charCodeAt(0)-96},0):0;
+ return Number(m[1])+':'+suffix;
+}
+function bulkLabels(){var map=new Map();items.forEach(function(item){var key=bulkLabelKey(item.__dpcNumberToken);if(key)map.set(key,item)});return map}
+function bulkHeading(line){return line.match(/^\s*(#\d+(?:[a-z]+|-[1-9]\d*)?)(?:[ \t]+(.*)|[ \t]*)$/i)}
+function bulkCutSnapshot(){return items.map(function(item){return {uid:String(item.__dpcUid||''),label:String(item.__dpcNumberToken||'')}})}
+function bulkOrder(cuts){return cuts.map(function(cut){return cut.uid+':'+cut.label}).join('|')}
+function rebaseBulkDraft(source,before,after){
+ var previous=new Map(),current=new Map(),skip=false;
+ before.forEach(function(cut){var key=bulkLabelKey(cut.label);if(key)previous.set(key,cut.uid)});
+ after.forEach(function(cut){current.set(cut.uid,cut.label)});
+ return String(source).replace(/\r\n?/g,'\n').split('\n').filter(function(line){
+   var heading=bulkHeading(line);
+   if(heading){var uid=previous.get(bulkLabelKey(heading[1]));skip=uid!==undefined&&!current.get(uid)}
+   return !skip;
+ }).map(function(line){
+   var heading=bulkHeading(line);if(!heading)return line;
+   var uid=previous.get(bulkLabelKey(heading[1])),label=uid!==undefined&&current.get(uid);
+   return label?line.replace(heading[1],label):line;
+ }).join('\n');
+}
 function bulkText(){
   return items.filter(function(item){return item.__dpcNumberToken&&editorText(item).trim()}).map(function(item){return item.__dpcNumberToken+' '+editorText(item)}).join('\n\n');
 }
 function parseBulk(text){
   var source=String(text).replace(/\r\n?/g,'\n'),lines=source.split('\n'),blocks=[],block=null;
-  var heading=/^\s*(#\d+(?:[a-z]+|-[1-9]\d*)?)(?:[ \t]+(.*)|[ \t]*)$/i;
-  lines.forEach(function(line){var m=line.match(heading);if(m){if(block)blocks.push(block);block={label:m[1],lines:[m[2]||'']};return}if(/^\s*#(?:\d|\s*$)/.test(line))throw new Error('컷 번호를 완성해 주세요.');if(block){block.lines.push(line)}else if(line.trim()){throw new Error('첫 지문 앞에 컷 번호가 없습니다. #1 지문 형식으로 입력해 주세요.')}});
+  lines.forEach(function(line){var m=bulkHeading(line);if(m){if(block)blocks.push(block);block={label:m[1],lines:[m[2]||'']};return}if(/^\s*#(?:\d|\s*$)/.test(line))throw new Error('컷 번호를 완성해 주세요.');if(block){block.lines.push(line)}else if(line.trim()){throw new Error('첫 지문 앞에 컷 번호가 없습니다. #1 지문 형식으로 입력해 주세요.')}});
   if(block)blocks.push(block);
   return blocks.map(function(b){return {label:b.label,text:b.lines.join('\n').replace(/^\n+|\n+$/g,'')}});
 }
 function applyBulk(source){
   var blocks=parseBulk(source),labels=bulkLabels(),seen=new Set(),updates=new Map();
   blocks.forEach(function(b){
-    var label=b.label.toLowerCase(),item=labels.get(label);
+    var label=bulkLabelKey(b.label),item=labels.get(label);
     if(!item)throw new Error(b.label+' 컷이 현재 시트에 없습니다.');
     if(seen.has(label))throw new Error(b.label+' 번호가 중복되었습니다.');
     seen.add(label);
@@ -17365,16 +17474,21 @@ function applyBulk(source){
 }
 function bindBulkEditor(){
   var card=E('dpcAiStoryCard'),field=E('dpcBulkText'),error=E('dpcBulkError');if(!card||!field||!error)return;
-  var pendingInvalid=false,renderedOrder='';
+  var pendingInvalid=false,renderedOrder='',renderedCuts=[];
   function refresh(){
-    if(pendingInvalid)return;
-    var order=items.map(function(item){return String(item.__dpcUid||'')+':'+String(item.__dpcNumberToken||'')}).join('|');
+    var cuts=bulkCutSnapshot(),order=bulkOrder(cuts);
+    if(pendingInvalid){
+      if(order===renderedOrder)return;
+      field.value=rebaseBulkDraft(field.value,renderedCuts,cuts);renderedCuts=cuts;renderedOrder=order;
+      try{applyBulk(field.value);pendingInvalid=false;error.textContent=''}
+      catch(err){error.textContent=err.message||'컷 번호 형식을 확인해 주세요.';return}
+    }
     if(document.activeElement===field&&order===renderedOrder)return;
     var current=bulkText();if(field.value!==current)field.value=current;
-    renderedOrder=order;
+    renderedOrder=order;renderedCuts=cuts;
     error.textContent='';
   }
-  bulkRefreshView=function(){if(card.open&&!E('dpcBulkPane').hidden)refresh()};
+  bulkRefreshView=refresh;
   function mode(which){
     var ai=which==='ai';E('dpcBulkPane').hidden=ai;E('dpcAiPane').hidden=!ai;
     E('dpcBulkTab').setAttribute('aria-selected',ai?'false':'true');
@@ -17385,7 +17499,7 @@ function bindBulkEditor(){
   E('dpcAiTab').addEventListener('click',function(){mode('ai')});
   card.addEventListener('toggle',function(){if(card.open){mode('bulk');track('caption_bulk_open')}});
   field.addEventListener('input',function(){
-    try{applyBulk(field.value);pendingInvalid=false;renderedOrder=items.map(function(item){return String(item.__dpcUid||'')+':'+String(item.__dpcNumberToken||'')}).join('|');error.textContent=''}
+    try{applyBulk(field.value);pendingInvalid=false;renderedCuts=bulkCutSnapshot();renderedOrder=bulkOrder(renderedCuts);error.textContent=''}
     catch(err){pendingInvalid=true;error.textContent=err.message||'컷 번호 형식을 확인해 주세요.'}
   });
   field.addEventListener('blur',refresh);
@@ -17555,7 +17669,7 @@ function bindActionTouch(){
     },true);
   });
 }
-function bind(){bindActionTouch();bindAlignmentPicker();bindBulkEditor();window.addEventListener('scroll',flushCaptionOnScroll,{passive:true});var thumbs=E('thumbs'),pages=E('pages');if(typeof window.render==='function'&&!window.render.__dpcSynchronousDecoration){var originalRender=window.render;var synchronizedRender=function(){var result=originalRender.apply(this,arguments);renumberItems();return result};synchronizedRender.__dpcSynchronousDecoration=true;window.render=synchronizedRender}if(thumbs)new MutationObserver(queueRefresh).observe(thumbs,{childList:true});if(pages)new MutationObserver(syncAiVisibility).observe(pages,{childList:true,subtree:false});var details=E('dpcAiStoryCard');if(details)details.addEventListener('toggle',function(){if(details.open){renumberItems();track('ai_card_open')}});var toggle=E('dpcCaptionToggle');if(toggle)toggle.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();setCaptionOpen(!document.body.classList.contains('dpc-show-captions'));dirty();track('caption_panel_toggle',{open:document.body.classList.contains('dpc-show-captions')?1:0})});['purposeImage','purposeDocument'].forEach(function(id){var modeButton=E(id);if(modeButton)modeButton.addEventListener('click',function(){setTimeout(syncCaptionMode,0)},true)});if(typeof window.dpcApplySheetPurposeMode==='function'&&!window.dpcApplySheetPurposeMode.__dpcCaptionModeSync){var oldApplyPurpose=window.dpcApplySheetPurposeMode;var wrappedApplyPurpose=function(){var result=oldApplyPurpose.apply(this,arguments);syncCaptionMode();return result};wrappedApplyPurpose.__dpcCaptionModeSync=true;window.dpcApplySheetPurposeMode=wrappedApplyPurpose}var refs=E('dpcAiRefInput');if(refs)refs.addEventListener('change',function(){Array.from(refs.files||[]).forEach(function(file){state.refs.push({file:file,url:URL.createObjectURL(file)})});renderRefs();refs.value='';dirty()});var context=E('dpcAiContext');if(context)context.addEventListener('input',dirty);var btn=E('dpcAiDraft');if(btn)btn.addEventListener('click',function(){track('ai_caption_draft',{cut_count:items.length,mode:'coming_soon'});alert('서비스 준비 중입니다.')});var resizeTimer=0;window.addEventListener('resize',function(){clearTimeout(resizeTimer);resizeTimer=setTimeout(function(){resizeAllCaptions();queueConnectorLayout()},80)});['dpcTextSize','dpcTextAlign'].forEach(function(id){var control=E(id);if(control)control.addEventListener('change',function(){resizeAllCaptions();dirty()})});setCaptionOpen(typeof window.dpcGetSheetPurposeMode==='function'&&window.dpcGetSheetPurposeMode()==='document');renumberItems();syncAiVisibility();syncCaptionMode()}
+function bind(){bindActionTouch();bindAlignmentPicker();bindBulkEditor();window.addEventListener('scroll',flushCaptionOnScroll,{passive:true});var thumbs=E('thumbs'),pages=E('pages');if(typeof window.render==='function'&&!window.render.__dpcSynchronousDecoration){var originalRender=window.render;var synchronizedRender=function(){var result=originalRender.apply(this,arguments);renumberItems();return result};synchronizedRender.__dpcSynchronousDecoration=true;window.render=synchronizedRender}if(thumbs)new MutationObserver(queueRefresh).observe(thumbs,{childList:true});if(pages)new MutationObserver(syncAiVisibility).observe(pages,{childList:true,subtree:false});var details=E('dpcAiStoryCard');if(details)details.addEventListener('toggle',function(){if(details.open){renumberItems();track('ai_card_open')}});var toggle=E('dpcCaptionToggle');if(toggle)toggle.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();setCaptionOpen(!document.body.classList.contains('dpc-show-captions'));dirty();track('caption_panel_toggle',{open:document.body.classList.contains('dpc-show-captions')?1:0})});['purposeImage','purposeDocument'].forEach(function(id){var modeButton=E(id);if(modeButton)modeButton.addEventListener('click',function(){setTimeout(syncCaptionMode,0)},true)});if(typeof window.dpcApplySheetPurposeMode==='function'&&!window.dpcApplySheetPurposeMode.__dpcCaptionModeSync){var oldApplyPurpose=window.dpcApplySheetPurposeMode;var wrappedApplyPurpose=function(){var result=oldApplyPurpose.apply(this,arguments);syncCaptionMode();return result};wrappedApplyPurpose.__dpcCaptionModeSync=true;window.dpcApplySheetPurposeMode=wrappedApplyPurpose}var refs=E('dpcAiRefInput');if(refs)refs.addEventListener('change',async function(){var selected=Array.from(refs.files||[]);refs.value='';try{for(var i=0;i<selected.length;i++){var file=await dpcSnapshotFile(selected[i]);state.refs.push({file:file,url:URL.createObjectURL(file)})}}catch(error){console.error(error);alert('레퍼런스 이미지를 읽을 수 없습니다. 파일을 다시 선택해 주세요.')}renderRefs();dirty()});var context=E('dpcAiContext');if(context)context.addEventListener('input',dirty);var btn=E('dpcAiDraft');if(btn)btn.addEventListener('click',function(){track('ai_caption_draft',{cut_count:items.length,mode:'coming_soon'});alert('서비스 준비 중입니다.')});var resizeTimer=0;window.addEventListener('resize',function(){clearTimeout(resizeTimer);resizeTimer=setTimeout(function(){resizeAllCaptions();queueConnectorLayout()},80)});['dpcTextSize','dpcTextAlign'].forEach(function(id){var control=E(id);if(control)control.addEventListener('change',function(){resizeAllCaptions();dirty()})});setCaptionOpen(typeof window.dpcGetSheetPurposeMode==='function'&&window.dpcGetSheetPurposeMode()==='document');renumberItems();syncAiVisibility();syncCaptionMode()}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind);else bind();
 })();
 </script>
@@ -17575,10 +17689,24 @@ function markDirty(){if(state.loading)return;state.dirty=true;syncButtons()}
 window.DpcProjectMarkDirty=markDirty;
 function controlState(){var out={};document.querySelectorAll('.controls-card input[id],.controls-card select[id],.controls-card textarea[id]').forEach(function(el){if(el.type==='file'||el.type==='button'||el.type==='submit'||el.id==='selectMode')return;out[el.id]={type:el.type||el.tagName.toLowerCase(),value:el.value,checked:!!el.checked}});return out}
 function applyControlState(values){Object.keys(values||{}).forEach(function(id){if(id==='selectMode')return;var el=E(id),rec=values[id];if(!el||!rec)return;if(el.type==='checkbox'||el.type==='radio')el.checked=!!rec.checked;else el.value=rec.value==null?'':String(rec.value)});if(typeof window.dpcSyncOptionPickers==='function')window.dpcSyncOptionPickers();var select=E('selectMode');if(select)select.checked=false;document.body.classList.remove('dpc-select-mode','dpc-has-selection');if(typeof window.dpcResetCutInteractionModes==='function')window.dpcResetCutInteractionModes();try{if(typeof window.dpcSyncMarginRuleControls==='function')window.dpcSyncMarginRuleControls();if(typeof window.dpcSyncCutNumberControls==='function')window.dpcSyncCutNumberControls();if(typeof window.syncFrameSheetOptionLabels==='function')window.syncFrameSheetOptionLabels()}catch(_e){}}
-async function blobFromItem(item){var file=item&&(item.originalFile||item.file);if(file instanceof Blob)return file;if(item&&item.src){var response=await fetch(item.src);if(response.ok)return response.blob()}throw new Error('프로젝트에 넣을 컷 이미지를 읽을 수 없습니다.')}
-async function saveProject(){if(typeof window.dpcSyncCaptionEditorsToItems==='function')window.dpcSyncCaptionEditorsToItems();if(state.loading||!Array.isArray(items)||!items.length)return;if(!window.JSZip){alert('프로젝트 저장 모듈을 불러오지 못했습니다. 네트워크를 확인해 주세요.');return}var btn=E('dpcProjectSave');state.loading=true;syncButtons();try{if(window.dpcPrepareSheetForSave&&E('pages')&&E('pages').querySelector('.page'))await window.dpcPrepareSheetForSave();var zip=new JSZip(),manifest={format:FORMAT,version:VERSION,savedAt:new Date().toISOString(),projectName:sourceProjectName(),purposeMode:typeof window.dpcGetSheetPurposeMode==='function'?window.dpcGetSheetPurposeMode():'document',controls:controlState(),items:[],ai:{context:'',captionOpen:false,refs:[]}};var ai=typeof window.DpcAiStoryExportState==='function'?window.DpcAiStoryExportState():null;if(ai){manifest.ai.context=ai.context||'';manifest.ai.captionOpen=!!ai.captionOpen}for(var i=0;i<items.length;i++){var item=items[i],blob=await blobFromItem(item),name=String(item.file&&item.file.name||('CUT_'+String(i+1).padStart(3,'0')+'.png')),path='items/'+String(i+1).padStart(4,'0')+extension(name,blob.type);zip.file(path,blob,{binary:true,compression:'STORE'});manifest.items.push({path:path,name:name,type:blob.type||'image/png',blank:item.type==='blank',ratio:item.ratio||'',alt:!!item.__dpcAltCut,caption:String(item.__dpcCaption||''),numberHidden:!!item.__dpcNumberHidden,numberPattern:item.__dpcNumberPattern,captionPlain:true})}var refs=ai&&Array.isArray(ai.refs)?ai.refs:[];for(var r=0;r<refs.length;r++){var ref=refs[r];if(!(ref instanceof Blob))continue;var refPath='references/'+String(r+1).padStart(3,'0')+extension(ref.name,ref.type);zip.file(refPath,ref,{binary:true,compression:'STORE'});manifest.ai.refs.push({path:refPath,name:ref.name||('reference_'+(r+1)),type:ref.type||'image/png'})}zip.file('project.json',JSON.stringify(manifest,null,2));var out=await zip.generateAsync({type:'blob',compression:'STORE',mimeType:'application/vnd.dpconti.project+zip'}),filename=safeName(manifest.projectName)+'_SHEET_'+stamp()+'.dpcproj';if(typeof window.dpcSaveBlob==='function')await window.dpcSaveBlob(out,filename);else{var url=URL.createObjectURL(out),a=document.createElement('a');a.href=url;a.download=filename;a.style.display='none';document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(url)},30000)}state.projectName=manifest.projectName;state.dirty=false;notify('프로젝트를 저장했습니다.');track('project_save',{item_count:items.length,reference_count:manifest.ai.refs.length})}catch(error){console.error(error);alert('프로젝트 저장에 실패했습니다. '+String(error&&error.message||''))}finally{state.loading=false;syncButtons()}}
+async function projectImageBytes(blob){
+  return {bytes:new Uint8Array(await blob.arrayBuffer()),type:blob.type||'image/png'};
+}
+async function blobFromItem(item){
+  var sources=[item&&item.originalFile,item&&item.file],seen=new Set();
+  for(var i=0;i<sources.length;i++){
+    var file=sources[i];if(!(file instanceof Blob)||seen.has(file))continue;seen.add(file);
+    try{return await projectImageBytes(file)}catch(_e){}
+  }
+  if(item&&item.src){
+    try{var response=await fetch(item.src);if(response.ok)return await projectImageBytes(await response.blob())}catch(_e){}
+  }
+  var label=item&&item.__dpcNumberToken||'',name=item&&item.file&&item.file.name||'이미지';
+  throw new Error((label?label+' ':'')+name+' 파일을 읽을 수 없습니다. 해당 컷의 그림을 다시 선택해 주세요.');
+}
+async function saveProject(){if(typeof window.dpcSyncCaptionEditorsToItems==='function')window.dpcSyncCaptionEditorsToItems();if(state.loading||!Array.isArray(items)||!items.length)return;if(!window.JSZip){alert('프로젝트 저장 모듈을 불러오지 못했습니다. 네트워크를 확인해 주세요.');return}var btn=E('dpcProjectSave');state.loading=true;syncButtons();try{if(window.dpcPrepareSheetForSave&&E('pages')&&E('pages').querySelector('.page'))await window.dpcPrepareSheetForSave();var zip=new JSZip(),manifest={format:FORMAT,version:VERSION,savedAt:new Date().toISOString(),projectName:sourceProjectName(),purposeMode:typeof window.dpcGetSheetPurposeMode==='function'?window.dpcGetSheetPurposeMode():'document',controls:controlState(),items:[],ai:{context:'',captionOpen:false,refs:[]}};var ai=typeof window.DpcAiStoryExportState==='function'?window.DpcAiStoryExportState():null;if(ai){manifest.ai.context=ai.context||'';manifest.ai.captionOpen=!!ai.captionOpen}for(var i=0;i<items.length;i++){var item=items[i],blob=await blobFromItem(item),name=String(item.file&&item.file.name||('CUT_'+String(i+1).padStart(3,'0')+'.png')),path='items/'+String(i+1).padStart(4,'0')+extension(name,blob.type);zip.file(path,blob.bytes,{binary:true,compression:'STORE'});manifest.items.push({path:path,name:name,type:blob.type||'image/png',blank:item.type==='blank',ratio:item.ratio||'',alt:!!item.__dpcAltCut,caption:String(item.__dpcCaption||''),numberHidden:!!item.__dpcNumberHidden,numberPattern:item.__dpcNumberPattern,captionPlain:true})}var refs=ai&&Array.isArray(ai.refs)?ai.refs:[];for(var r=0;r<refs.length;r++){var ref=refs[r];if(!(ref instanceof Blob))continue;var refPath='references/'+String(r+1).padStart(3,'0')+extension(ref.name,ref.type);var refData;try{refData=await projectImageBytes(ref)}catch(_e){throw new Error('레퍼런스 '+(ref.name||String(r+1))+' 파일을 읽을 수 없습니다. 다시 추가해 주세요.')}zip.file(refPath,refData.bytes,{binary:true,compression:'STORE'});manifest.ai.refs.push({path:refPath,name:ref.name||('reference_'+(r+1)),type:ref.type||'image/png'})}zip.file('project.json',JSON.stringify(manifest,null,2));var out=await zip.generateAsync({type:'blob',compression:'STORE',mimeType:'application/vnd.dpconti.project+zip'}),filename=safeName(manifest.projectName)+'_SHEET_'+stamp()+'.dpcproj';if(typeof window.dpcSaveBlob==='function')await window.dpcSaveBlob(out,filename);else{var url=URL.createObjectURL(out),a=document.createElement('a');a.href=url;a.download=filename;a.style.display='none';document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(url)},30000)}state.projectName=manifest.projectName;state.dirty=false;notify('프로젝트를 저장했습니다.');track('project_save',{item_count:items.length,reference_count:manifest.ai.refs.length})}catch(error){console.error(error);alert('프로젝트 저장에 실패했습니다. '+String(error&&error.message||''))}finally{state.loading=false;syncButtons()}}
 function releaseCurrentItems(){if(!Array.isArray(items))return;items.forEach(function(item){try{if(item&&item.src&&/^blob:/.test(item.src))URL.revokeObjectURL(item.src)}catch(_e){}})}
-async function loadProject(file){if(!file)return;if(!window.JSZip){alert('프로젝트 불러오기 모듈을 사용할 수 없습니다.');return}if(state.dirty&&!confirm('저장하지 않은 변경 사항이 있습니다. 현재 작업을 닫고 프로젝트를 불러올까요?'))return;state.loading=true;syncButtons();try{var zip=await JSZip.loadAsync(file),entry=zip.file('project.json');if(!entry)throw new Error('올바른 프로젝트 파일이 아닙니다.');var manifest=JSON.parse(await entry.async('string'));if(manifest.format!==FORMAT||Number(manifest.version)!==VERSION||!Array.isArray(manifest.items))throw new Error('지원하지 않는 프로젝트 형식입니다.');releaseCurrentItems();if(typeof window.resetFrameSheetRuntimeToInitial==='function')window.resetFrameSheetRuntimeToInitial();else items.splice(0,items.length);if(typeof window.dpcApplySheetPurposeMode==='function')window.dpcApplySheetPurposeMode(manifest.purposeMode==='image'?'image':'document');for(var i=0;i<manifest.items.length;i++){var rec=manifest.items[i],imageEntry=zip.file(rec.path);if(!imageEntry)throw new Error('프로젝트의 컷 이미지가 누락되었습니다.');var blob=await imageEntry.async('blob'),imageFile=new File([blob],rec.name||('CUT_'+String(i+1).padStart(3,'0')+'.png'),{type:rec.type||blob.type||'image/png'});var item=typeof window.dpcCreateSheetItemFromFile==='function'?await window.dpcCreateSheetItemFromFile(imageFile):{file:imageFile,src:URL.createObjectURL(imageFile),selected:false};if(rec.blank){item.type='blank';item.ratio=rec.ratio||''}item.__dpcAltCut=!!rec.alt;item.__dpcCaption=String(rec.caption||'');items.push(item)}window.__sheetUserEditedRatio=true;window.__sheetUserEditedLayout=true;if(typeof window.render==='function')window.render();applyControlState(manifest.controls||{});if(typeof window.syncCutListVisibility==='function')window.syncCutListVisibility();var refFiles=[];for(var r=0;r<((manifest.ai&&manifest.ai.refs)||[]).length;r++){var refRec=manifest.ai.refs[r],refEntry=zip.file(refRec.path);if(!refEntry)continue;var refBlob=await refEntry.async('blob');refFiles.push(new File([refBlob],refRec.name||('reference_'+(r+1)+'.png'),{type:refRec.type||refBlob.type||'image/png'}))}if(typeof window.DpcAiStoryImportMetadata==='function')window.DpcAiStoryImportMetadata(manifest.items);if(typeof window.DpcAiStoryImportState==='function')window.DpcAiStoryImportState({context:manifest.ai&&manifest.ai.context||'',captionOpen:!!(manifest.ai&&manifest.ai.captionOpen),refs:refFiles});state.projectName=safeName(manifest.projectName||file.name.replace(/_SHEET_\d{8}_\d{4}\.dpcproj$/i,''));state.dirty=false;if(typeof window.hideFrameSheetIntroThumb==='function')window.hideFrameSheetIntroThumb();var make=E('make');if(make){make.disabled=false;setTimeout(function(){make.click()},0)}notify('프로젝트를 불러왔습니다.');track('project_load',{item_count:items.length,reference_count:refFiles.length})}catch(error){console.error(error);alert('프로젝트 불러오기에 실패했습니다. '+String(error&&error.message||''))}finally{state.loading=false;syncButtons();var input=E('dpcProjectFile');if(input)input.value=''}}
+async function loadProject(file){if(!file)return;if(!window.JSZip){alert('프로젝트 불러오기 모듈을 사용할 수 없습니다.');return}if(state.dirty&&!confirm('저장하지 않은 변경 사항이 있습니다. 현재 작업을 닫고 프로젝트를 불러올까요?'))return;state.loading=true;syncButtons();try{var zip=await JSZip.loadAsync(file),entry=zip.file('project.json');if(!entry)throw new Error('올바른 프로젝트 파일이 아닙니다.');var manifest=JSON.parse(await entry.async('string'));if(manifest.format!==FORMAT||Number(manifest.version)!==VERSION||!Array.isArray(manifest.items))throw new Error('지원하지 않는 프로젝트 형식입니다.');releaseCurrentItems();if(typeof window.resetFrameSheetRuntimeToInitial==='function')window.resetFrameSheetRuntimeToInitial();else items.splice(0,items.length);if(typeof window.dpcApplySheetPurposeMode==='function')window.dpcApplySheetPurposeMode(manifest.purposeMode==='image'?'image':'document');for(var i=0;i<manifest.items.length;i++){var rec=manifest.items[i],imageEntry=zip.file(rec.path);if(!imageEntry)throw new Error('프로젝트의 컷 이미지가 누락되었습니다.');var imageBytes=await imageEntry.async('uint8array'),imageFile=dpcCreateMemoryFile(imageBytes,rec.name||('CUT_'+String(i+1).padStart(3,'0')+'.png'),{type:rec.type||'image/png'});var item=typeof window.dpcCreateSheetItemFromFile==='function'?await window.dpcCreateSheetItemFromFile(imageFile):{file:imageFile,src:URL.createObjectURL(imageFile),selected:false};if(rec.blank){item.type='blank';item.ratio=rec.ratio||''}item.__dpcAltCut=!!rec.alt;item.__dpcCaption=String(rec.caption||'');items.push(item)}window.__sheetUserEditedRatio=true;window.__sheetUserEditedLayout=true;if(typeof window.render==='function')window.render();applyControlState(manifest.controls||{});if(typeof window.syncCutListVisibility==='function')window.syncCutListVisibility();var refFiles=[];for(var r=0;r<((manifest.ai&&manifest.ai.refs)||[]).length;r++){var refRec=manifest.ai.refs[r],refEntry=zip.file(refRec.path);if(!refEntry)continue;var refBytes=await refEntry.async('uint8array');refFiles.push(dpcCreateMemoryFile(refBytes,refRec.name||('reference_'+(r+1)+'.png'),{type:refRec.type||'image/png'}))}if(typeof window.DpcAiStoryImportMetadata==='function')window.DpcAiStoryImportMetadata(manifest.items);if(typeof window.DpcAiStoryImportState==='function')window.DpcAiStoryImportState({context:manifest.ai&&manifest.ai.context||'',captionOpen:!!(manifest.ai&&manifest.ai.captionOpen),refs:refFiles});state.projectName=safeName(manifest.projectName||file.name.replace(/_SHEET_\d{8}_\d{4}\.dpcproj$/i,''));state.dirty=false;if(typeof window.hideFrameSheetIntroThumb==='function')window.hideFrameSheetIntroThumb();var make=E('make');if(make){make.disabled=false;setTimeout(function(){make.click()},0)}notify('프로젝트를 불러왔습니다.');track('project_load',{item_count:items.length,reference_count:refFiles.length})}catch(error){console.error(error);alert('프로젝트 불러오기에 실패했습니다. '+String(error&&error.message||''))}finally{state.loading=false;syncButtons();var input=E('dpcProjectFile');if(input)input.value=''}}
 function bind(){var save=E('dpcProjectSave'),load=E('dpcProjectLoad'),input=E('dpcProjectFile'),thumbs=E('thumbs');if(save)save.addEventListener('click',saveProject);if(load&&input)load.addEventListener('click',function(){input.value='';input.click()});if(input)input.addEventListener('change',function(){loadProject(input.files&&input.files[0])});if(thumbs)new MutationObserver(function(records){syncButtons();if(!state.loading&&records.some(function(v){return v.addedNodes.length||v.removedNodes.length}))markDirty()}).observe(thumbs,{childList:true});document.addEventListener('change',function(e){if(state.loading||!e.target)return;if(e.target.closest&&e.target.closest('.controls-card'))markDirty()});document.addEventListener('input',function(e){if(state.loading||!e.target)return;if(e.target.closest&&e.target.closest('.controls-card'))markDirty()});syncButtons()}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind);else bind();
 })();
