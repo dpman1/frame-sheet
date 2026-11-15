@@ -19457,16 +19457,16 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
    function nonempty(page){var pixels=page.getContext('2d').getImageData(0,0,page.width,page.height).data;for(var k=3;k<pixels.length;k+=4)if(pixels[k])return true;return false}
    function exportRole(index){var role=roles[index],entries=Array.from(role.parts.values()).sort(function(a,b){return a.slot-b.slot||a.mode.localeCompare(b.mode)}).filter(function(entry){return nonempty(entry.page)});
      if(!entries.length)return 0;
-     var grouped=index===4||index===0/* v846 claude: 바탕도 내용이 있으면 항상 폴더(일반과 같은 구조) */||role.children||role.modes.size>1,mode=role.modes.size===1?Array.from(role.modes)[0]:'pass';
+     var grouped=index===4||index===0||index===3/* v849 claude: 바탕·일반·동선은 늘 폴더 하나 */||role.children||role.modes.size>1,slots849=[];entries.forEach(function(e){if(slots849.indexOf(e.slot)<0)slots849.push(e.slot)});var mode=role.modes.size===1?Array.from(role.modes)[0]:'pass';if(mode==='normal')mode='pass'/* v849 claude: 폴더는 통과 — 안의 곱하기 레이어가 SHEET처럼 아래(바탕 등)와 섞이게 */;
      if(grouped)layers.push(marker('</Layer group>',3));
-     entries.forEach(function(entry){var layer=raster(entry.page,grouped?entry.name+(role.modes.size>1?(entry.mode==='multiply'?' (곱하기)':' (일반)'):''):index===3?entry.name/* v846 claude: 일반 폴더 안 레이어는 화면 이름 그대로(레이어 1) */:drawingNames[index],0,0,false);psdMap533.push({n:layer.name,g:(index===3?'일반':'')+(grouped?(index===3?'/':'')+drawingNames[index]:''),L:index,s:entry.slot,m:entry.mode});layer.blend=grouped?(role.modes.size>1?entry.mode:'normal'):entry.mode;
+     entries.forEach(function(entry){var layer=raster(entry.page,grouped?'레이어 '+(slots849.indexOf(entry.slot)+1)/* v849 claude: 아래부터 몇 번째인지 */+(role.modes.size>1?(entry.mode==='multiply'?' (곱하기)':' (일반)'):''):drawingNames[index],0,0,false);psdMap533.push({n:layer.name,g:grouped?drawingNames[index]:'',L:index,s:entry.slot,m:entry.mode});layer.blend=grouped?(role.modes.size>1?entry.mode:'normal'):entry.mode;
        var layerMask=entry.mask;if(!grouped&&role.mask){if(layerMask){layerMask.getContext('2d').globalCompositeOperation='multiply';layerMask.getContext('2d').drawImage(role.mask,0,0)}else layerMask=role.mask}attachMask(layer,layerMask);layers.push(layer);entry.page.width=entry.page.height=1;
      });
      if(grouped)layers.push(attachMask(marker(drawingNames[index],1,false,mode),role.mask));return entries.length;
    }
    exportRole(0);exportRole(1);
    // General and tone always share one outer folder, even in an empty sheet.
-   layers.push(marker('</Layer group>',3));if(!exportRole(3))layers.push({name:'레이어 1',left:0,top:0,width:0,height:0,data:new Uint8Array(0)})/* v846 claude: 일반 폴더엔 그린 게 없어도 빈 기본 레이어 한 장 — 열자마자 그 위에 그리기 */;layers.push(marker('일반',1,false,'pass'));
+   if(!exportRole(3)){layers.push(marker('</Layer group>',3));layers.push({name:'레이어 1',left:0,top:0,width:0,height:0,data:new Uint8Array(0)});layers.push(marker('일반',1,false,'pass'))}/* v849 claude: 일반 폴더 하나 — 그린 게 없어도 빈 레이어 1 */
    exportRole(4);
    layers.push({name:'</Layer group>',left:0,top:0,width:0,height:0,data:new Uint8Array(0),section:3,locked:false});
    layers.push(raster(mask,'마스킹',0,0,false));mergedCtx.drawImage(mask,0,0);mask.width=mask.height=1;
